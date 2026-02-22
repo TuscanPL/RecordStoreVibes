@@ -83,6 +83,7 @@ function handleLeaveStore() {
 
       <!-- Record Crate -->
       <RecordCrate
+        :key="store.crateRequestCount"
         :albums="store.currentCrate"
         :selected-ids="selectedIds"
         :inspecting-index="inspectingIndex"
