@@ -4,7 +4,6 @@ import { TresCanvas } from '@tresjs/core'
 import { useAppStore } from '../../stores/app'
 import { useProvider } from '../../composables/useProvider'
 import RecordCrate from '../../components/3d/RecordCrate.vue'
-import RecordSleeve from '../../components/3d/RecordSleeve.vue'
 import SelectionCounter from '../../components/ui/SelectionCounter.vue'
 import ClerkDialog from '../../components/ui/ClerkDialog.vue'
 import type { Album } from '../../providers/types'
@@ -68,38 +67,23 @@ function handleLeaveStore() {
   <div class="absolute inset-0">
     <!-- 3D Scene -->
     <TresCanvas :clear-color="'#0a0805'" :shadows="true">
-      <!-- Camera -->
-      <TresPerspectiveCamera :position="[0, 4, 7]" :look-at="[0, 0, 0]" />
+      <!-- Camera: overhead filing-cabinet perspective -->
+      <TresPerspectiveCamera :position="[0, 8, 6]" :look-at="[0, 0, 0]" />
 
       <!-- Lighting -->
       <TresAmbientLight :intensity="2.0" color="#ffe4c4" />
-      <TresDirectionalLight :position="[3, 5, 2]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
-      <TresPointLight :position="[-2, 3, 1]" :intensity="8.0" color="#ff9944" :distance="15" />
-      <TresPointLight :position="[0, 4, 5]" :intensity="5.0" color="#ffcc88" :distance="12" />
+      <TresDirectionalLight :position="[0, 6, 3]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
+      <TresPointLight :position="[-2, 4, 2]" :intensity="8.0" color="#ff9944" :distance="15" />
+      <TresPointLight :position="[2, 5, 5]" :intensity="5.0" color="#ffcc88" :distance="12" />
 
       <!-- Record Crate -->
       <RecordCrate
         :albums="store.currentCrate"
         :selected-ids="selectedIds"
         :inspecting-index="inspectingIndex"
+        :is-flipped="isFlipped"
         @select-record="handleRecordClick"
       />
-
-      <!-- Inspecting record (pulled out) -->
-      <TresGroup
-        v-if="inspectingAlbum"
-        :position="[0, 3.5, 3]"
-        :rotation-y="isFlipped ? Math.PI : 0"
-      >
-        <RecordSleeve
-          :cover-art-url="inspectingAlbum.coverArtUrl"
-          :title="inspectingAlbum.title"
-          :artist="inspectingAlbum.artist"
-          :year="inspectingAlbum.year"
-          :width="3.1"
-          :height="3.1"
-        />
-      </TresGroup>
 
       <!-- Floor -->
       <TresMesh :rotation-x="-Math.PI / 2" :position-y="-2">

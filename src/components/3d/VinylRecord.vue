@@ -95,7 +95,7 @@ animationId = requestAnimationFrame(animate)
 <template>
   <TresGroup ref="groupRef">
     <!-- Main disc -->
-    <TresMesh :rotation-x="-Math.PI / 2">
+    <TresMesh>
       <TresCylinderGeometry :args="[radius, radius, thickness, 64]" />
       <primitive :object="vinylMaterial" attach="material" />
     </TresMesh>

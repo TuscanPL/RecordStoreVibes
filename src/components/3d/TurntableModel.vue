@@ -36,19 +36,19 @@ const metalColor = '#888888'
     </TresMesh>
 
     <!-- Platter (where record sits) -->
-    <TresMesh :position="[-0.5, 0.05, 0]" :rotation-x="-Math.PI / 2">
+    <TresMesh :position="[-0.5, 0.05, 0]">
       <TresCylinderGeometry :args="[1.7, 1.7, 0.08, 64]" />
       <TresMeshStandardMaterial :color="platterColor" :roughness="0.3" :metalness="0.6" />
     </TresMesh>
 
     <!-- Platter mat -->
-    <TresMesh :position="[-0.5, 0.1, 0]" :rotation-x="-Math.PI / 2">
+    <TresMesh :position="[-0.5, 0.1, 0]">
       <TresCylinderGeometry :args="[1.6, 1.6, 0.02, 64]" />
       <TresMeshStandardMaterial color="#333333" :roughness="0.9" :metalness="0.0" />
     </TresMesh>
 
     <!-- Spindle -->
-    <TresMesh :position="[-0.5, 0.15, 0]" :rotation-x="-Math.PI / 2">
+    <TresMesh :position="[-0.5, 0.15, 0]">
       <TresCylinderGeometry :args="[0.03, 0.03, 0.2, 16]" />
       <TresMeshStandardMaterial :color="metalColor" :roughness="0.2" :metalness="0.8" />
     </TresMesh>
