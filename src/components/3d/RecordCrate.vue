@@ -12,6 +12,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'select-record', index: number): void
+  (e: 'hover-record', index: number | null): void
 }>()
 
 const crateColor = '#5C3A1E'
@@ -90,8 +91,8 @@ const hoveringIndex = ref<number | null>(null)
         :position-y="recordSize * 0.9"
         :rotation-x="-Math.PI / 2"
         @pointer-down="() => emit('select-record', index)"
-        @pointer-enter="() => hoveringIndex = index"
-        @pointer-leave="() => { if (hoveringIndex === index) hoveringIndex = null }"
+        @pointer-enter="() => { hoveringIndex = index; emit('hover-record', index) }"
+        @pointer-leave="() => { if (hoveringIndex === index) { hoveringIndex = null; emit('hover-record', null) } }"
       >
         <TresPlaneGeometry :args="[recordSize, slotSpacing]" />
         <TresMeshBasicMaterial :transparent="true" :opacity="0.001" :depth-write="false" :side="2" />

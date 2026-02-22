@@ -15,6 +15,16 @@ const inspectingIndex = ref<number | null>(null)
 const inspectingAlbum = ref<Album | null>(null)
 const isFlipped = ref(false)
 const clerkVisible = ref(false)
+const hoveringAlbum = ref<Album | null>(null)
+const mousePos = ref({ x: 0, y: 0 })
+
+function handleHoverRecord(index: number | null) {
+  hoveringAlbum.value = index !== null ? store.currentCrate[index] ?? null : null
+}
+
+function handleMouseMove(e: MouseEvent) {
+  mousePos.value = { x: e.clientX, y: e.clientY }
+}
 
 const selectedIds = computed(() => store.selectedRecords.map(r => r.id))
 
@@ -69,7 +79,7 @@ function handleLeaveStore() {
 </script>
 
 <template>
-  <div class="absolute inset-0">
+  <div class="absolute inset-0" @mousemove="handleMouseMove">
     <!-- 3D Scene -->
     <TresCanvas :clear-color="'#0a0805'" :shadows="true">
       <!-- Camera: overhead filing-cabinet perspective -->
@@ -89,6 +99,7 @@ function handleLeaveStore() {
         :inspecting-index="inspectingIndex"
         :is-flipped="isFlipped"
         @select-record="handleRecordClick"
+        @hover-record="handleHoverRecord"
       />
 
       <!-- Floor -->
@@ -207,6 +218,18 @@ function handleLeaveStore() {
       <!-- Clerk dialog -->
       <div class="absolute bottom-20 left-4 pointer-events-none">
         <ClerkDialog :visible="clerkVisible || store.isLoadingCrate" />
+      </div>
+
+      <!-- Hover tooltip -->
+      <div
+        v-if="hoveringAlbum && !inspectingAlbum"
+        class="fixed pointer-events-none z-50"
+        :style="{ left: mousePos.x + 16 + 'px', top: mousePos.y - 8 + 'px' }"
+      >
+        <div class="bg-vinyl-warm/95 backdrop-blur-sm rounded-lg px-3 py-2 border border-vinyl-amber/30 shadow-lg">
+          <p class="font-display font-bold text-vinyl-cream text-sm whitespace-nowrap">{{ hoveringAlbum.title }}</p>
+          <p class="text-vinyl-amber text-xs whitespace-nowrap">{{ hoveringAlbum.artist }}</p>
+        </div>
       </div>
 
       <!-- Error -->
