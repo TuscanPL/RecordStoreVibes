@@ -5,17 +5,20 @@ const IA_METADATA_URL = 'https://archive.org/metadata'
 const IA_DOWNLOAD_URL = 'https://archive.org/download'
 
 const GENRE_QUERIES: Record<string, string> = {
-  jazz: 'subject:(jazz) AND collection:(audio) AND mediatype:(audio)',
-  classical: 'subject:(classical OR orchestral OR symphony) AND collection:(audio) AND mediatype:(audio)',
-  blues: 'subject:(blues) AND collection:(audio) AND mediatype:(audio)',
-  folk: 'subject:(folk OR traditional) AND collection:(audio) AND mediatype:(audio)',
-  world: 'subject:(world music OR ethnic OR traditional) AND collection:(audio) AND mediatype:(audio)',
-  gospel: 'subject:(gospel OR spiritual OR hymn) AND collection:(audio) AND mediatype:(audio)',
-  spoken: 'subject:(spoken word OR poetry OR speech) AND collection:(audio) AND mediatype:(audio)',
-  surprise: 'collection:(audio) AND mediatype:(audio)',
+  jazz: 'subject:(jazz) AND mediatype:(audio)',
+  classical: 'subject:(classical OR orchestral OR symphony) AND mediatype:(audio)',
+  blues: 'subject:(blues) AND mediatype:(audio)',
+  folk: 'subject:(folk OR traditional) AND mediatype:(audio)',
+  world: 'subject:(world music OR ethnic OR traditional) AND mediatype:(audio)',
+  gospel: 'subject:(gospel OR spiritual OR hymn) AND mediatype:(audio)',
+  spoken: 'subject:(spoken word OR poetry OR speech) AND mediatype:(audio)',
+  surprise: 'mediatype:(audio)',
 }
 
 const AUDIO_EXTENSIONS = ['.mp3', '.ogg', '.flac', '.wav', '.m4a']
+
+const METADATA_CONCURRENCY = 5
+const METADATA_TIMEOUT = 10000
 
 interface IASearchDoc {
   identifier: string
@@ -99,14 +102,72 @@ function getCoverArtUrl(identifier: string, files: IAFile[]): string | null {
   return `https://archive.org/services/img/${identifier}`
 }
 
+async function fetchWithTimeout(url: string, timeout: number): Promise<Response> {
+  const controller = new AbortController()
+  const id = setTimeout(() => controller.abort(), timeout)
+  try {
+    const response = await fetch(url, { signal: controller.signal })
+    return response
+  } finally {
+    clearTimeout(id)
+  }
+}
+
+async function runConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R | null>,
+): Promise<R[]> {
+  const results: R[] = []
+  let index = 0
+
+  async function worker() {
+    while (index < items.length) {
+      const i = index++
+      const item = items[i]
+      if (!item) continue
+      try {
+        const result = await fn(item)
+        if (result) results.push(result)
+      } catch {
+        // skip failed items
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
+  await Promise.all(workers)
+  return results
+}
+
 export class InternetArchiveProvider implements MusicProvider {
   name = 'Internet Archive'
 
   async search(genre: string, count: number, excludeIds: string[]): Promise<Album[]> {
-    const query = GENRE_QUERIES[genre] ?? GENRE_QUERIES['surprise'] ?? 'collection:(audio) AND mediatype:(audio)'
+    const query = GENRE_QUERIES[genre] ?? GENRE_QUERIES['surprise'] ?? 'mediatype:(audio)'
     const fetchCount = count + excludeIds.length + 10
 
-    const randomPage = Math.floor(Math.random() * 20) + 1
+    // First do a lightweight query to find total results, then pick a valid random page
+    const countParams = new URLSearchParams({
+      q: query,
+      fl: 'identifier',
+      rows: '0',
+      output: 'json',
+    })
+
+    let numFound = 1000 // fallback assumption
+    try {
+      const countResp = await fetchWithTimeout(`${IA_SEARCH_URL}?${countParams}`, METADATA_TIMEOUT)
+      if (countResp.ok) {
+        const countData = await countResp.json()
+        numFound = countData.response?.numFound ?? 1000
+      }
+    } catch {
+      // use fallback
+    }
+
+    const maxPage = Math.max(1, Math.floor(numFound / fetchCount))
+    const randomPage = Math.floor(Math.random() * Math.min(maxPage, 50)) + 1
 
     const params = new URLSearchParams({
       q: query,
@@ -117,7 +178,7 @@ export class InternetArchiveProvider implements MusicProvider {
       output: 'json',
     })
 
-    const response = await fetch(`${IA_SEARCH_URL}?${params}`)
+    const response = await fetchWithTimeout(`${IA_SEARCH_URL}?${params}`, METADATA_TIMEOUT)
     if (!response.ok) {
       throw new Error(`IA search failed: ${response.status}`)
     }
@@ -126,22 +187,18 @@ export class InternetArchiveProvider implements MusicProvider {
     const docs: IASearchDoc[] = data.response?.docs || []
 
     const filtered = docs.filter(doc => !excludeIds.includes(doc.identifier))
+    const candidates = filtered.slice(0, count)
 
-    const albums: Album[] = []
-    for (const doc of filtered.slice(0, count)) {
-      try {
-        const album = await this.buildAlbumFromDoc(doc, genre)
-        if (album) albums.push(album)
-      } catch {
-        // skip items we can't build
-      }
-    }
+    // Fetch metadata concurrently instead of sequentially
+    const albums = await runConcurrent(candidates, METADATA_CONCURRENCY, (doc) =>
+      this.buildAlbumFromDoc(doc, genre)
+    )
 
     return albums
   }
 
   private async buildAlbumFromDoc(doc: IASearchDoc, genre: string): Promise<Album | null> {
-    const metaResponse = await fetch(`${IA_METADATA_URL}/${doc.identifier}`)
+    const metaResponse = await fetchWithTimeout(`${IA_METADATA_URL}/${doc.identifier}`, METADATA_TIMEOUT)
     if (!metaResponse.ok) return null
 
     const meta = await metaResponse.json()
@@ -173,7 +230,7 @@ export class InternetArchiveProvider implements MusicProvider {
   }
 
   async getAlbumDetails(id: string): Promise<AlbumDetails> {
-    const response = await fetch(`${IA_METADATA_URL}/${id}`)
+    const response = await fetchWithTimeout(`${IA_METADATA_URL}/${id}`, METADATA_TIMEOUT)
     if (!response.ok) throw new Error(`Failed to fetch album details: ${response.status}`)
 
     const meta = await response.json()
