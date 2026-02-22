@@ -72,9 +72,10 @@ function handleLeaveStore() {
       <TresPerspectiveCamera :position="[0, 4, 7]" :look-at="[0, 0, 0]" />
 
       <!-- Lighting -->
-      <TresAmbientLight :intensity="0.3" color="#ffe4c4" />
-      <TresDirectionalLight :position="[3, 5, 2]" :intensity="0.8" color="#ffd4a0" :cast-shadow="true" />
-      <TresPointLight :position="[-2, 3, 1]" :intensity="0.5" color="#ff9944" :distance="10" />
+      <TresAmbientLight :intensity="2.0" color="#ffe4c4" />
+      <TresDirectionalLight :position="[3, 5, 2]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
+      <TresPointLight :position="[-2, 3, 1]" :intensity="8.0" color="#ff9944" :distance="15" />
+      <TresPointLight :position="[0, 4, 5]" :intensity="5.0" color="#ffcc88" :distance="12" />
 
       <!-- Record Crate -->
       <RecordCrate

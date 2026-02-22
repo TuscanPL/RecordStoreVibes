@@ -67,10 +67,9 @@ const recordPositions = computed(() => {
       :position-x="recordPositions[index]?.x || 0"
       :position-y="inspectingIndex === index ? 2.0 : 0"
       :position-z="inspectingIndex === index ? 1.5 : 0"
-      @click="() => emit('select-record', index)"
     >
-      <TresMesh>
-        <TresBoxGeometry :args="[0.06, 3.0, 3.0]" />
+      <TresMesh @pointer-down="() => emit('select-record', index)">
+        <TresBoxGeometry :args="[0.25, 3.0, 3.0]" />
         <TresMeshStandardMaterial
           :color="selectedIds.includes(album.id) ? '#c8a96e' : '#2a1f14'"
           :roughness="0.8"
@@ -80,8 +79,8 @@ const recordPositions = computed(() => {
       </TresMesh>
 
       <!-- Spine label (top edge visible) -->
-      <TresMesh :position-y="1.55" :rotation-x="-Math.PI / 2">
-        <TresPlaneGeometry :args="[0.06, 3.0]" />
+      <TresMesh :position-y="1.55" :rotation-x="-Math.PI / 2" @pointer-down="() => emit('select-record', index)">
+        <TresPlaneGeometry :args="[0.25, 3.0]" />
         <TresMeshStandardMaterial
           :color="selectedIds.includes(album.id) ? '#e8c87e' : '#3a2a14'"
           :roughness="0.7"

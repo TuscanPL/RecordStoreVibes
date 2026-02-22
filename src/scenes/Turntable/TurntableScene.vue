@@ -35,10 +35,10 @@ function handleBack() {
       <TresPerspectiveCamera :position="[0, 5, 6]" :look-at="[0, 0, 0]" />
 
       <!-- Lighting -->
-      <TresAmbientLight :intensity="0.2" color="#ffe4c4" />
-      <TresDirectionalLight :position="[2, 4, 3]" :intensity="0.6" color="#ffd4a0" :cast-shadow="true" />
-      <TresPointLight :position="[4, 2, -2]" :intensity="0.8" color="#ff9944" :distance="8" />
-      <TresPointLight :position="[-3, 2, 1]" :intensity="0.3" color="#ffcc88" :distance="6" />
+      <TresAmbientLight :intensity="1.5" color="#ffe4c4" />
+      <TresDirectionalLight :position="[2, 4, 3]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
+      <TresPointLight :position="[4, 2, -2]" :intensity="10.0" color="#ff9944" :distance="12" />
+      <TresPointLight :position="[-3, 2, 1]" :intensity="5.0" color="#ffcc88" :distance="10" />
 
       <Desk>
         <!-- Turntable -->
@@ -62,7 +62,7 @@ function handleBack() {
             :key="album.id"
             :position-y="-0.4 + i * 0.08"
             :rotation-x="-Math.PI / 2"
-            @click="selectFromStack(album)"
+            @pointer-down="selectFromStack(album)"
           >
             <TresBoxGeometry :args="[2.5, 2.5, 0.06]" />
             <TresMeshStandardMaterial
