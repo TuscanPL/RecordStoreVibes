@@ -22,19 +22,16 @@ const props = withDefaults(defineProps<{
   selected: false,
 })
 
-// Module-level texture cache — survives component unmount/remount
+// Module-level caches — survive component unmount/remount
 const textureCache = new Map<string, THREE.Texture>()
+const itunesArtCache = new Map<string, string | null>()
 
 const frontTexture = ref<THREE.Texture | null>(null)
 
-// Load cover art for front (with cache)
-watch(() => props.coverArtUrl, (url) => {
-  if (url) {
+function loadTexture(url: string): Promise<THREE.Texture> {
+  return new Promise((resolve, reject) => {
     const cached = textureCache.get(url)
-    if (cached) {
-      frontTexture.value = cached
-      return
-    }
+    if (cached) { resolve(cached); return }
     const loader = new THREE.TextureLoader()
     loader.crossOrigin = 'anonymous'
     loader.load(
@@ -42,12 +39,56 @@ watch(() => props.coverArtUrl, (url) => {
       (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace
         textureCache.set(url, tex)
-        frontTexture.value = tex
+        resolve(tex)
       },
       undefined,
-      () => { frontTexture.value = null }
+      reject,
     )
+  })
+}
+
+async function searchItunesCoverArt(artist: string, title: string): Promise<string | null> {
+  const cacheKey = `${artist}|||${title}`
+  if (itunesArtCache.has(cacheKey)) return itunesArtCache.get(cacheKey) ?? null
+
+  try {
+    const query = encodeURIComponent(`${artist} ${title}`)
+    const resp = await fetch(`https://itunes.apple.com/search?term=${query}&entity=album&limit=1`)
+    if (!resp.ok) { itunesArtCache.set(cacheKey, null); return null }
+
+    const data = await resp.json()
+    const result = data.results?.[0]
+    if (!result?.artworkUrl100) { itunesArtCache.set(cacheKey, null); return null }
+
+    // Upscale from 100x100 to 600x600
+    const url = result.artworkUrl100.replace('100x100', '600x600')
+    itunesArtCache.set(cacheKey, url)
+    return url
+  } catch {
+    itunesArtCache.set(cacheKey, null)
+    return null
   }
+}
+
+// Load cover art with fallback chain:
+// 1. iTunes search → 2. IA file → 3. Canvas placeholder
+watch(() => props.coverArtUrl, async (url) => {
+  const itunesUrl = await searchItunesCoverArt(props.artist, props.title)
+  if (itunesUrl) {
+    try {
+      frontTexture.value = await loadTexture(itunesUrl)
+      return
+    } catch { /* continue */ }
+  }
+
+  if (url) {
+    try {
+      frontTexture.value = await loadTexture(url)
+      return
+    } catch { /* continue */ }
+  }
+
+  frontTexture.value = null
 }, { immediate: true })
 
 function wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) {
