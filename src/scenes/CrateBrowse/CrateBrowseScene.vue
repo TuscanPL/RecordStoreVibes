@@ -24,6 +24,11 @@ function handleRecordClick(index: number) {
     inspectingIndex.value = null
     inspectingAlbum.value = null
     isFlipped.value = false
+  } else if (inspectingIndex.value !== null) {
+    // Another record is already inspected — close it first
+    inspectingIndex.value = null
+    inspectingAlbum.value = null
+    isFlipped.value = false
   } else {
     inspectingIndex.value = index
     inspectingAlbum.value = store.currentCrate[index] || null
@@ -68,7 +73,7 @@ function handleLeaveStore() {
     <!-- 3D Scene -->
     <TresCanvas :clear-color="'#0a0805'" :shadows="true">
       <!-- Camera: overhead filing-cabinet perspective -->
-      <TresPerspectiveCamera :position="[0, 8, 6]" :look-at="[0, 0, 0]" />
+      <TresPerspectiveCamera :position="[0, 8, 8]" :look-at="[0, 0, 0]" />
 
       <!-- Lighting -->
       <TresAmbientLight :intensity="2.0" color="#ffe4c4" />
