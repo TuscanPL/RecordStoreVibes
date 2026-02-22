@@ -1,31 +1,50 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 import type { Album } from '../../providers/types'
+import RecordSleeve from './RecordSleeve.vue'
 
 const props = defineProps<{
   albums: Album[]
   selectedIds: string[]
   inspectingIndex: number | null
+  isFlipped?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'select-record', index: number): void
+  (e: 'hover-record', index: number | null): void
 }>()
 
 const crateColor = '#5C3A1E'
-const crateWidth = 8
+const crateWidth = 4.0
 const crateHeight = 3.5
-const crateDepth = 3.5
+const crateDepth = 7.0
 const wallThickness = 0.15
+const recordSize = 3.0
+
+const usableDepth = crateDepth - wallThickness * 2 - 0.4
+
+const slotSpacing = computed(() => usableDepth / Math.max(props.albums.length, 1))
 
 const recordPositions = computed(() => {
+  const spacing = slotSpacing.value
   return props.albums.map((_, i) => {
-    const totalWidth = crateWidth - wallThickness * 2 - 0.5
-    const spacing = totalWidth / Math.max(props.albums.length, 1)
-    const x = -totalWidth / 2 + spacing * i + spacing / 2
-    return { x, y: 0, z: 0 }
+    const z = usableDepth / 2 - spacing * i - spacing / 2
+    return z
   })
 })
+
+function getRecordTilt(index: number): number {
+  if (props.inspectingIndex === null) return 0
+  if (index === props.inspectingIndex) return -Math.PI / 3
+  if (index < props.inspectingIndex) {
+    const distance = props.inspectingIndex - index
+    return -0.12 / distance
+  }
+  return 0
+}
+
+const hoveringIndex = ref<number | null>(null)
 </script>
 
 <template>
@@ -36,56 +55,68 @@ const recordPositions = computed(() => {
       <TresMeshStandardMaterial :color="crateColor" :roughness="0.9" />
     </TresMesh>
 
-    <!-- Crate back wall -->
-    <TresMesh :position-z="-crateDepth / 2" :position-y="0">
+    <!-- Back wall -->
+    <TresMesh :position-z="-crateDepth / 2">
       <TresBoxGeometry :args="[crateWidth, crateHeight, wallThickness]" />
       <TresMeshStandardMaterial :color="crateColor" :roughness="0.9" />
     </TresMesh>
 
-    <!-- Crate front wall (shorter) -->
-    <TresMesh :position-z="crateDepth / 2" :position-y="-crateHeight * 0.15">
-      <TresBoxGeometry :args="[crateWidth, crateHeight * 0.7, wallThickness]" />
+    <!-- Front wall (shorter) -->
+    <TresMesh :position-z="crateDepth / 2" :position-y="-crateHeight * 0.25">
+      <TresBoxGeometry :args="[crateWidth, crateHeight * 0.5, wallThickness]" />
       <TresMeshStandardMaterial :color="crateColor" :roughness="0.9" />
     </TresMesh>
 
-    <!-- Crate left wall -->
+    <!-- Left wall -->
     <TresMesh :position-x="-crateWidth / 2">
       <TresBoxGeometry :args="[wallThickness, crateHeight, crateDepth]" />
       <TresMeshStandardMaterial :color="crateColor" :roughness="0.9" />
     </TresMesh>
 
-    <!-- Crate right wall -->
+    <!-- Right wall -->
     <TresMesh :position-x="crateWidth / 2">
       <TresBoxGeometry :args="[wallThickness, crateHeight, crateDepth]" />
       <TresMeshStandardMaterial :color="crateColor" :roughness="0.9" />
     </TresMesh>
 
-    <!-- Records in crate (as thin box spines) -->
+    <!-- Records (packed front-to-back along Z) -->
     <TresGroup
       v-for="(album, index) in albums"
       :key="album.id"
-      :position-x="recordPositions[index]?.x || 0"
-      :position-y="inspectingIndex === index ? 2.0 : 0"
-      :position-z="inspectingIndex === index ? 1.5 : 0"
+      :position-z="recordPositions[index] || 0"
+      :position-y="-crateHeight / 2 + wallThickness / 2 + (inspectingIndex === index ? 3.0 : 0)"
     >
-      <TresMesh @pointer-down="() => emit('select-record', index)">
-        <TresBoxGeometry :args="[0.25, 3.0, 3.0]" />
-        <TresMeshStandardMaterial
-          :color="selectedIds.includes(album.id) ? '#c8a96e' : '#2a1f14'"
-          :roughness="0.8"
-          :emissive="selectedIds.includes(album.id) ? '#3a2a10' : '#000000'"
-          :emissive-intensity="0.3"
-        />
+      <!-- Click target: horizontal plane covering the slot -->
+      <TresMesh
+        :position-y="recordSize * 0.9"
+        :rotation-x="-Math.PI / 2"
+        @pointer-down="() => emit('select-record', index)"
+        @pointer-enter="() => { hoveringIndex = index; emit('hover-record', index) }"
+        @pointer-leave="() => { if (hoveringIndex === index) { hoveringIndex = null; emit('hover-record', null) } }"
+      >
+        <TresPlaneGeometry :args="[recordSize, slotSpacing]" />
+        <TresMeshBasicMaterial :transparent="true" :opacity="0.001" :depth-write="false" :side="2" />
       </TresMesh>
 
-      <!-- Spine label (top edge visible) -->
-      <TresMesh :position-y="1.55" :rotation-x="-Math.PI / 2" @pointer-down="() => emit('select-record', index)">
-        <TresPlaneGeometry :args="[0.25, 3.0]" />
-        <TresMeshStandardMaterial
-          :color="selectedIds.includes(album.id) ? '#e8c87e' : '#3a2a14'"
-          :roughness="0.7"
-        />
-      </TresMesh>
+      <!-- Pivot at bottom edge of record -->
+      <TresGroup :rotation-x="getRecordTilt(index)">
+        <!-- Record body, shifted up so bottom sits at pivot -->
+        <TresGroup
+          :position-y="recordSize / 2"
+          :rotation-y="inspectingIndex === index && isFlipped ? Math.PI : 0"
+        >
+          <RecordSleeve
+            :width="recordSize"
+            :height="recordSize"
+            :cover-art-url="album.coverArtUrl"
+            :title="album.title"
+            :artist="album.artist"
+            :year="album.year"
+            :hovered="hoveringIndex === index"
+            :selected="selectedIds.includes(album.id)"
+          />
+        </TresGroup>
+      </TresGroup>
     </TresGroup>
   </TresGroup>
 </template>

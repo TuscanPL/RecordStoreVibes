@@ -4,7 +4,6 @@ import { TresCanvas } from '@tresjs/core'
 import { useAppStore } from '../../stores/app'
 import { useProvider } from '../../composables/useProvider'
 import RecordCrate from '../../components/3d/RecordCrate.vue'
-import RecordSleeve from '../../components/3d/RecordSleeve.vue'
 import SelectionCounter from '../../components/ui/SelectionCounter.vue'
 import ClerkDialog from '../../components/ui/ClerkDialog.vue'
 import type { Album } from '../../providers/types'
@@ -16,12 +15,27 @@ const inspectingIndex = ref<number | null>(null)
 const inspectingAlbum = ref<Album | null>(null)
 const isFlipped = ref(false)
 const clerkVisible = ref(false)
+const hoveringAlbum = ref<Album | null>(null)
+const mousePos = ref({ x: 0, y: 0 })
+
+function handleHoverRecord(index: number | null) {
+  hoveringAlbum.value = index !== null ? store.currentCrate[index] ?? null : null
+}
+
+function handleMouseMove(e: MouseEvent) {
+  mousePos.value = { x: e.clientX, y: e.clientY }
+}
 
 const selectedIds = computed(() => store.selectedRecords.map(r => r.id))
 
 function handleRecordClick(index: number) {
   if (inspectingIndex.value === index) {
     // Close inspection
+    inspectingIndex.value = null
+    inspectingAlbum.value = null
+    isFlipped.value = false
+  } else if (inspectingIndex.value !== null) {
+    // Another record is already inspected — close it first
     inspectingIndex.value = null
     inspectingAlbum.value = null
     isFlipped.value = false
@@ -65,41 +79,28 @@ function handleLeaveStore() {
 </script>
 
 <template>
-  <div class="absolute inset-0">
+  <div class="absolute inset-0" @mousemove="handleMouseMove">
     <!-- 3D Scene -->
     <TresCanvas :clear-color="'#0a0805'" :shadows="true">
-      <!-- Camera -->
-      <TresPerspectiveCamera :position="[0, 4, 7]" :look-at="[0, 0, 0]" />
+      <!-- Camera: overhead filing-cabinet perspective -->
+      <TresPerspectiveCamera :position="[0, 8, 8]" :look-at="[0, 0, 0]" />
 
       <!-- Lighting -->
       <TresAmbientLight :intensity="2.0" color="#ffe4c4" />
-      <TresDirectionalLight :position="[3, 5, 2]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
-      <TresPointLight :position="[-2, 3, 1]" :intensity="8.0" color="#ff9944" :distance="15" />
-      <TresPointLight :position="[0, 4, 5]" :intensity="5.0" color="#ffcc88" :distance="12" />
+      <TresDirectionalLight :position="[0, 6, 3]" :intensity="3.0" color="#ffd4a0" :cast-shadow="true" />
+      <TresPointLight :position="[-2, 4, 2]" :intensity="8.0" color="#ff9944" :distance="15" />
+      <TresPointLight :position="[2, 5, 5]" :intensity="5.0" color="#ffcc88" :distance="12" />
 
       <!-- Record Crate -->
       <RecordCrate
+        :key="store.crateRequestCount"
         :albums="store.currentCrate"
         :selected-ids="selectedIds"
         :inspecting-index="inspectingIndex"
+        :is-flipped="isFlipped"
         @select-record="handleRecordClick"
+        @hover-record="handleHoverRecord"
       />
-
-      <!-- Inspecting record (pulled out) -->
-      <TresGroup
-        v-if="inspectingAlbum"
-        :position="[0, 3.5, 3]"
-        :rotation-y="isFlipped ? Math.PI : 0"
-      >
-        <RecordSleeve
-          :cover-art-url="inspectingAlbum.coverArtUrl"
-          :title="inspectingAlbum.title"
-          :artist="inspectingAlbum.artist"
-          :year="inspectingAlbum.year"
-          :width="3.1"
-          :height="3.1"
-        />
-      </TresGroup>
 
       <!-- Floor -->
       <TresMesh :rotation-x="-Math.PI / 2" :position-y="-2">
@@ -217,6 +218,18 @@ function handleLeaveStore() {
       <!-- Clerk dialog -->
       <div class="absolute bottom-20 left-4 pointer-events-none">
         <ClerkDialog :visible="clerkVisible || store.isLoadingCrate" />
+      </div>
+
+      <!-- Hover tooltip -->
+      <div
+        v-if="hoveringAlbum && !inspectingAlbum"
+        class="fixed pointer-events-none z-50"
+        :style="{ left: mousePos.x + 16 + 'px', top: mousePos.y - 8 + 'px' }"
+      >
+        <div class="bg-vinyl-warm/95 backdrop-blur-sm rounded-lg px-3 py-2 border border-vinyl-amber/30 shadow-lg">
+          <p class="font-display font-bold text-vinyl-cream text-sm whitespace-nowrap">{{ hoveringAlbum.title }}</p>
+          <p class="text-vinyl-amber text-xs whitespace-nowrap">{{ hoveringAlbum.artist }}</p>
+        </div>
       </div>
 
       <!-- Error -->

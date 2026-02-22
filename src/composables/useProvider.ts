@@ -1,6 +1,21 @@
 import { ref } from 'vue'
 import { useAppStore } from '../stores/app'
 import { getProvider } from '../providers'
+import type { Album } from '../providers/types'
+
+function preloadCoverArt(albums: Album[]): Promise<void> {
+  const promises = albums
+    .filter(a => a.coverArtUrl)
+    .map(a => new Promise<void>((resolve) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => resolve()
+      img.onerror = () => resolve()
+      img.src = a.coverArtUrl!
+    }))
+  return Promise.all(promises).then(() => {})
+}
+
 export function useProvider() {
   const store = useAppStore()
   const provider = getProvider()
@@ -18,6 +33,9 @@ export function useProvider() {
         error.value = 'No records found. The clerk shrugs apologetically.'
         return
       }
+
+      // Pre-load all cover art before revealing the crate
+      await preloadCoverArt(albums)
 
       store.setCrate(albums)
     } catch (err) {
