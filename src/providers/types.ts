@@ -39,12 +39,24 @@ export interface CrateListing {
   records: Record[]
   /** Total matches upstream, so the UI can be honest about what it capped. */
   totalFound: number
+  /** Last page actually read, so the session knows where to resume. */
+  lastPage: number
+  /** True once there's nothing left upstream to page into. */
+  drained: boolean
+}
+
+export interface DigOptions {
+  limit: number
+  /** 1-based. Paging deeper into a downloads-desc sort is the deep-cut dial. */
+  page?: number
+  /** Identifiers already seen this session; filtered out server-side results. */
+  exclude?: ReadonlySet<string>
 }
 
 export interface MusicProvider {
   name: string
-  search(query: string, limit: number): Promise<CrateListing>
-  browseQuery(query: string, limit: number): Promise<CrateListing>
+  search(query: string, opts: DigOptions): Promise<CrateListing>
+  browseQuery(query: string, opts: DigOptions): Promise<CrateListing>
   getRecord(id: string): Promise<Record | null>
 }
 
