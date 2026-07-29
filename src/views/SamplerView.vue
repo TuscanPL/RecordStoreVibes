@@ -128,6 +128,9 @@ function pxPerSec(): number {
 
 function writePad(pad: Pad) {
   library.setPad(key.value, activePad.value, pad)
+  // Pads are a reason to keep the metadata: without this the store's gc
+  // drops records that were only ever chopped, never flagged or starred.
+  if (record.value) library.remember(record.value)
 }
 
 function onDown(e: PointerEvent) {
@@ -201,6 +204,39 @@ function setPitch(semitones: number) {
   const cur = current.value
   if (!cur) return
   writePad({ ...cur, pitch: Math.max(-12, Math.min(12, semitones)) })
+}
+
+/* ---- flags ---- */
+
+/** Lengths offered when turning a flag into a trim. */
+const FLAG_LENGTHS = [0.5, 1, 2, 4, 8]
+
+const flagsOpen = ref(false)
+const flagLength = ref(2)
+
+const trackFlags = computed(() =>
+  record.value ? library.markersFor(record.value.id, trackName.value) : [],
+)
+
+/** Flags drawn on the strip, as track percentages — the view maps them. */
+const flagPercents = computed(() =>
+  total.value > 0 ? trackFlags.value.map(m => (m.timestampSec / total.value) * 100) : [],
+)
+
+/**
+ * Turn a flag into the current pad's trim: it starts where you flagged and
+ * runs for the chosen length. Everything after that is ordinary trimming.
+ */
+function useFlag(atSec: number) {
+  if (total.value <= 0) return
+  const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
+  writePad({
+    startSec: start,
+    endSec: Math.min(total.value, start + flagLength.value),
+    pitch: current.value?.pitch ?? 0,
+  })
+  zoomed.value = true
+  if (current.value) sampler.play(current.value, activePad.value)
 }
 
 /* ---- pads ---- */
@@ -383,7 +419,7 @@ const lengthSec = computed(() =>
             <Waveform
               :peaks="sampler.peaks.value"
               :progress="0"
-              :markers="[]"
+              :markers="flagPercents"
               :range-start="total > 0 ? view.start / total : 0"
               :range-end="total > 0 ? view.end / total : 1"
               :dense="zoomed"
@@ -538,6 +574,58 @@ const lengthSec = computed(() =>
 
       <!-- Pads: square, so the controls above keep their room. -->
       <div class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto">
+        <!-- Flags for this track, turned into trims on the active pad. -->
+        <div v-if="!lazy && trackFlags.length" class="mb-3 rounded-lg border border-ink-600">
+          <button
+            class="w-full flex items-center justify-between px-3 py-2 text-left"
+            @click="flagsOpen = !flagsOpen"
+          >
+            <span class="text-[11px] uppercase tracking-wider text-flag">
+              Flags · {{ trackFlags.length }}
+            </span>
+            <svg
+              class="w-4 h-4 text-ink-500 transition-transform"
+              :class="flagsOpen ? 'rotate-180' : ''"
+              fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
+            >
+              <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <div v-if="flagsOpen" class="px-3 pb-3">
+            <div class="flex items-center gap-1.5 mb-2">
+              <span class="text-[10px] text-ink-500 mr-0.5">LENGTH</span>
+              <button
+                v-for="len in FLAG_LENGTHS"
+                :key="len"
+                class="flex-1 h-8 rounded text-[11px] tabular-nums border transition-colors"
+                :class="flagLength === len
+                  ? 'bg-flag text-ink-900 border-flag font-medium'
+                  : 'border-ink-500 text-flag-soft active:bg-ink-700'"
+                @click="flagLength = len"
+              >
+                {{ len }}s
+              </button>
+            </div>
+
+            <button
+              v-for="m in trackFlags"
+              :key="m.id"
+              class="w-full flex items-center gap-2 px-2 py-2 rounded text-left
+                     border-t border-ink-700/50 active:bg-ink-700"
+              @click="useFlag(m.timestampSec)"
+            >
+              <span class="text-[13px] tabular-nums text-flag w-14">
+                {{ formatTime(m.timestampSec) }}
+              </span>
+              <span class="flex-1 min-w-0 truncate text-[12px] text-flag-dim">
+                {{ m.note || 'flagged' }}
+              </span>
+              <span class="text-[10px] text-ink-500">→ pad {{ activePad + 1 }}</span>
+            </button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-4 gap-2">
           <button
             v-for="i in PAD_COUNT"

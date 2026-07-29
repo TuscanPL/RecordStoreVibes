@@ -9,6 +9,7 @@ const { exportJson, exportCsv, trackUrl } = useExport()
 
 const expanded = ref<string | null>(null)
 const showStarred = ref(false)
+const showChopped = ref(false)
 
 const groups = computed(() => library.flagged)
 const hasAnything = computed(() => groups.value.length > 0)
@@ -143,6 +144,49 @@ function fileCount(markers: { trackName: string }[]): number {
             </a>
           </div>
         </div>
+      </div>
+
+      <!-- Tracks with pads on them, so chopped work is findable again. -->
+      <div v-if="library.chopped.length" class="mt-2">
+        <button
+          class="w-full flex items-center justify-between px-4 py-3 text-left"
+          @click="showChopped = !showChopped"
+        >
+          <span class="text-[12px] uppercase tracking-wider text-flag-dim">
+            Chopped · {{ library.chopped.length }}
+          </span>
+          <svg
+            class="w-5 h-5 text-ink-500 transition-transform"
+            :class="showChopped ? 'rotate-180' : ''"
+            fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
+          >
+            <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+
+        <template v-if="showChopped">
+          <router-link
+            v-for="c in library.chopped"
+            :key="c.key"
+            :to="`/r/${c.recordId}/pads/${encodeURIComponent(c.trackName)}`"
+            class="flex items-center gap-3 px-4 py-2.5 active:bg-ink-700 border-t border-ink-700/40"
+          >
+            <div class="w-10 h-10 flex-none rounded bg-ink-700 overflow-hidden">
+              <img
+                v-if="c.record.artworkUrl" :src="c.record.artworkUrl" alt="" loading="lazy"
+                class="w-full h-full object-cover"
+                @error="($event.target as HTMLImageElement).style.visibility = 'hidden'"
+              />
+            </div>
+            <div class="flex-1 min-w-0">
+              <p class="text-[13px] text-cream truncate">{{ c.record.title }}</p>
+              <p class="text-[11px] text-flag-dim truncate">{{ c.trackName }}</p>
+            </div>
+            <span class="text-[11px] text-flag tabular-nums flex-none">
+              {{ c.count }} pad{{ c.count === 1 ? '' : 's' }}
+            </span>
+          </router-link>
+        </template>
       </div>
 
       <!-- Starred lives here too, rather than earning a fourth screen. -->
