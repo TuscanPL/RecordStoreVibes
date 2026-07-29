@@ -35,8 +35,20 @@ interface Range {
  */
 const trim = ref<Range | null>(null)
 
-/** Pad under the finger, for playback highlight and pitch editing. */
-const activePad = ref<number | null>(null)
+/**
+ * What the trim controls act on: the working range, or one pad.
+ *
+ * Tapping a pad points the nudges, zoom, Play and Roll at that chop so a
+ * single slice can be adjusted properly. Touching the trim on the strip
+ * points them back. CHOP always uses the trim regardless — that's the range
+ * chopping happens inside.
+ */
+const focus = ref<'trim' | number>('trim')
+
+/** Pad under the finger, for highlight and pitch editing. */
+const activePad = computed<number | null>(() =>
+  typeof focus.value === 'number' ? focus.value : null,
+)
 
 const trackName = computed(() => decodeURIComponent(props.track))
 const key = computed(() => padKey(props.id, trackName.value))
@@ -45,6 +57,23 @@ const total = computed(() => sampler.buffer.value?.duration ?? 0)
 const currentPad = computed<Pad | null>(() =>
   activePad.value === null ? null : (bank.value[activePad.value] ?? null),
 )
+
+/** The range the controls edit — a pad when one is focused, else the trim. */
+const focused = computed<Range | null>(() => {
+  if (focus.value === 'trim') return trim.value
+  return bank.value[focus.value] ?? null
+})
+
+/** Writes an edit back to wherever focus is pointing. */
+function writeFocused(range: Range) {
+  if (focus.value === 'trim') {
+    trim.value = range
+    commitTrim()
+    return
+  }
+  const pad = bank.value[focus.value]
+  if (pad) library.setPad(key.value, focus.value, { ...pad, ...range })
+}
 
 const trackMeta = computed(
   () => record.value?.tracks.find(t => t.name === trackName.value) ?? null,
@@ -60,7 +89,7 @@ const zoomed = ref(false)
 /** Zoom frames whatever is being worked on: the chop range, else the trim. */
 const zoomAnchor = computed<Range | null>(() => {
   if (lazy.value) return { startSec: lazyRange.value.start, endSec: lazyRange.value.end }
-  return trim.value
+  return focused.value
 })
 
 /**
@@ -168,8 +197,8 @@ function onDown(e: PointerEvent) {
   dragView.value = { ...view.value }
   const t = timeAt(e)
 
-  // Near an edge of the trim? Adjust it rather than starting a new range.
-  const cur = trim.value
+  // Near an edge of whatever's focused? Adjust it rather than start anew.
+  const cur = focused.value
   if (cur) {
     const scale = pxPerSec()
     if (Math.abs(t - cur.startSec) * scale < EDGE_GRAB_PX) {
@@ -182,15 +211,27 @@ function onDown(e: PointerEvent) {
     }
   }
 
+  // Tapping inside the trim hands the controls back to it.
+  const t0 = trim.value
+  if (t0 && t >= t0.startSec && t <= t0.endSec) {
+    focus.value = 'trim'
+    mode = null
+    playFocused()
+    return
+  }
+
+  // Anything else draws a new trim, which focuses it by definition.
+  focus.value = 'trim'
   mode = 'new'
   anchor = t
   trim.value = { startSec: t, endSec: t + MIN_LEN }
 }
 
 function onMove(e: PointerEvent) {
-  if (!mode || !trim.value) return
+  if (!mode) return
+  const cur = focused.value
+  if (!cur) return
   const t = timeAt(e)
-  const cur = trim.value
 
   if (mode === 'new') {
     trim.value = {
@@ -198,9 +239,9 @@ function onMove(e: PointerEvent) {
       endSec: Math.max(anchor + MIN_LEN, Math.max(anchor, t)),
     }
   } else if (mode === 'start') {
-    trim.value = { ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) }
+    writeFocused({ ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) })
   } else {
-    trim.value = { ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) }
+    writeFocused({ ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) })
   }
 }
 
@@ -214,36 +255,39 @@ function onUp(e: PointerEvent) {
     // capture already gone
   }
   commitTrim()
-  playTrim()
+  playFocused()
 }
 
-/* ---- trim controls ---- */
+/* ---- controls, pointed at whatever is focused ---- */
 
 function nudge(edge: 'startSec' | 'endSec', delta: number) {
-  const cur = trim.value
+  const cur = focused.value
   if (!cur) return
   const next = { ...cur }
   next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
   if (next.endSec - next.startSec < MIN_LEN) return
-  trim.value = next
-  commitTrim()
+  writeFocused(next)
 }
 
-function playTrim() {
-  const cur = trim.value
+function playFocused() {
+  const cur = focused.value
   if (!cur) return
-  sampler.play({ ...cur, pitch: 0 }, null)
+  sampler.play({ ...cur, pitch: currentPad.value?.pitch ?? 0 }, activePad.value)
 }
 
-/** The tail of the trim, for hearing where the out point lands. */
+/** The tail of what's focused, for hearing where the out point lands. */
 const ROLL_SEC = 3
 
 function roll() {
-  const cur = trim.value
+  const cur = focused.value
   if (!cur) return
   sampler.play(
-    { startSec: Math.max(cur.startSec, cur.endSec - ROLL_SEC), endSec: cur.endSec, pitch: 0 },
-    null,
+    {
+      startSec: Math.max(cur.startSec, cur.endSec - ROLL_SEC),
+      endSec: cur.endSec,
+      pitch: currentPad.value?.pitch ?? 0,
+    },
+    activePad.value,
   )
 }
 
@@ -288,9 +332,10 @@ function useFlag(atSec: number) {
   const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
   const end = Math.max(start + MIN_LEN, Math.min(total.value, start + flagLength.value))
   trim.value = { startSec: start, endSec: end }
+  focus.value = 'trim'
   zoomed.value = true
   commitTrim()
-  playTrim()
+  playFocused()
 }
 
 /* ---- pads ---- */
@@ -303,7 +348,7 @@ function hitPad(i: number) {
   }
 
   const existing = bank.value[i]
-  activePad.value = i
+  focus.value = i
 
   if (existing) {
     sampler.play(existing, i)
@@ -318,7 +363,7 @@ function hitPad(i: number) {
 
 function clearPad(i: number) {
   library.setPad(key.value, i, null)
-  if (activePad.value === i) activePad.value = null
+  if (focus.value === i) focus.value = 'trim'
 }
 
 /* ---- lazy chop ---- */
@@ -343,6 +388,7 @@ function startLazyChop() {
     endLazyChop()
     return
   }
+  focus.value = 'trim'
   const cur = trim.value
   if (!cur || cur.endSec - cur.startSec < MIN_CHOP * 2) return
 
@@ -350,7 +396,6 @@ function startLazyChop() {
   lazyBounds.value = [cur.startSec]
   lazyNextPad.value = 0
   for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
-  activePad.value = null
 
   lazy.value = true
   zoomed.value = true
@@ -590,8 +635,12 @@ function inView(a: number, b: number): boolean {
   return b > v.start && a < v.end
 }
 
-const trimLength = computed(() =>
-  trim.value ? trim.value.endSec - trim.value.startSec : 0,
+const focusedLength = computed(() =>
+  focused.value ? focused.value.endSec - focused.value.startSec : 0,
+)
+
+const focusLabel = computed(() =>
+  focus.value === 'trim' ? 'Trim' : `Pad ${focus.value + 1}`,
 )
 </script>
 
@@ -680,7 +729,9 @@ const trimLength = computed(() =>
               class="absolute inset-y-0 pointer-events-none border-l"
               :class="sampler.playing.value === i
                 ? 'bg-flag/45 border-cream'
-                : 'bg-flag/10 border-flag/40'"
+                : focus === i
+                  ? 'bg-flag/30 border-cream'
+                  : 'bg-flag/10 border-flag/40'"
               :style="{ left: `${pct(p.startSec)}%`, width: `${pct(p.endSec) - pct(p.startSec)}%` }"
             >
               <span class="absolute top-0.5 left-1 text-[9px] tabular-nums text-cream/80">
@@ -692,11 +743,13 @@ const trimLength = computed(() =>
           <!-- The trim: the range chopping works inside. -->
           <template v-if="trim">
             <div
-              class="absolute inset-y-0 border-x-2 border-cream pointer-events-none
-                     transition-colors"
-              :class="sampler.active.value && sampler.playing.value === null
-                ? 'bg-cream/30'
-                : 'bg-cream/10'"
+              class="absolute inset-y-0 border-x-2 pointer-events-none transition-colors"
+              :class="[
+                focus === 'trim' ? 'border-cream' : 'border-cream/40',
+                sampler.active.value && sampler.playing.value === null
+                  ? 'bg-cream/30'
+                  : 'bg-cream/10',
+              ]"
               :style="{
                 left: `${pct(trim.startSec)}%`,
                 width: `${pct(trim.endSec) - pct(trim.startSec)}%`,
@@ -733,21 +786,23 @@ const trimLength = computed(() =>
           v-if="!lazy"
           class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
         >
-          <span>{{ trim ? formatTime(trim.startSec) : '—' }}</span>
-          <span class="text-cream">
-            <template v-if="trim">Trim · {{ trimLength.toFixed(2) }}s</template>
+          <span>{{ focused ? formatTime(focused.startSec) : '—' }}</span>
+          <span :class="focus === 'trim' ? 'text-cream' : 'text-flag'">
+            <template v-if="focused">
+              {{ focusLabel }} · {{ focusedLength.toFixed(2) }}s
+            </template>
             <template v-else>Drag the waveform, or tap a flag</template>
           </span>
-          <span>{{ trim ? formatTime(trim.endSec) : '—' }}</span>
+          <span>{{ focused ? formatTime(focused.endSec) : '—' }}</span>
         </div>
 
         <div v-if="!lazy" class="flex items-center gap-1.5 mt-2">
           <span class="text-[10px] text-ink-500 w-4">IN</span>
-          <button class="trim" :disabled="!trim" @click="nudge('startSec', -0.1)">−</button>
-          <button class="trim" :disabled="!trim" @click="nudge('startSec', 0.1)">+</button>
+          <button class="trim" :disabled="!focused" @click="nudge('startSec', -0.1)">−</button>
+          <button class="trim" :disabled="!focused" @click="nudge('startSec', 0.1)">+</button>
           <span class="flex-1" />
-          <button class="trim" :disabled="!trim" @click="nudge('endSec', -0.1)">−</button>
-          <button class="trim" :disabled="!trim" @click="nudge('endSec', 0.1)">+</button>
+          <button class="trim" :disabled="!focused" @click="nudge('endSec', -0.1)">−</button>
+          <button class="trim" :disabled="!focused" @click="nudge('endSec', 0.1)">+</button>
           <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
         </div>
 
@@ -755,15 +810,15 @@ const trimLength = computed(() =>
           <button
             class="flex-1 h-10 rounded-lg bg-ink-600 text-cream text-[13px]
                    active:bg-ink-500 disabled:opacity-40"
-            :disabled="!trim"
-            @click="playTrim"
+            :disabled="!focused"
+            @click="playFocused"
           >
             Play
           </button>
           <button
             class="flex-1 h-10 rounded-lg border border-ink-500 text-flag-soft text-[13px]
                    active:bg-ink-700 disabled:opacity-40"
-            :disabled="!trim"
+            :disabled="!focused"
             @click="roll"
           >
             Roll
@@ -953,7 +1008,7 @@ const trimLength = computed(() =>
         </p>
 
         <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
-          Set a trim, then CHOP it. An empty pad takes a copy of the trim.
+          Tap a pad to point the controls at that chop; tap the trim to go back.
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>

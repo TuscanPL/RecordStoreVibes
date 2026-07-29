@@ -12,6 +12,10 @@
     <!-- Home screen / standalone -->
     <link rel="manifest" href="./manifest.webmanifest" />
     <meta name="theme-color" content="#0e0c0a" />
+    <!-- Both spellings: the apple- prefix is what older iOS reads, the
+         unprefixed one is the standard newer versions prefer. Without a
+         standalone signal iOS keeps the browser chrome at the bottom. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Crate" />

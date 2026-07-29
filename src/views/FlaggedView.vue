@@ -141,6 +141,8 @@ function fileCount(markers: { trackName: string }[]): number {
               :key="name"
               :href="trackUrl(g.record.id, name)"
               download
+              target="_blank"
+              rel="noopener"
               class="px-3 h-9 inline-flex items-center rounded-full border border-ink-500
                      text-[12px] text-flag-soft active:bg-ink-700 max-w-[60vw] truncate"
             >
