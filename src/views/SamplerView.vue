@@ -158,8 +158,24 @@ let mode: 'new' | 'start' | 'end' | null = null
 let anchor = 0
 
 const EDGE_GRAB_PX = 18
-/** Chops count as joined if their edges are this close. */
-const LINK_TOL = 0.02
+/** Dragging an edge this close to a neighbour's snaps them together. */
+const SNAP_PX = 14
+
+/**
+ * Nearest assigned pad on either side, skipping gaps.
+ *
+ * Index±1 isn't enough: clearing pad 4 would leave 3 and 5 unable to reach
+ * each other, so the chain broke wherever a pad had been removed.
+ */
+function prevPadIndex(i: number): number {
+  for (let k = i - 1; k >= 0; k--) if (bank.value[k]) return k
+  return -1
+}
+
+function nextPadIndex(i: number): number {
+  for (let k = i + 1; k < PAD_COUNT; k++) if (bank.value[k]) return k
+  return -1
+}
 
 /**
  * The view is frozen for the duration of a drag.
@@ -303,25 +319,43 @@ function onMove(e: PointerEvent) {
     return
   }
 
-  const prev = typeof index === 'number' ? (bank.value[index - 1] ?? null) : null
-  const next = typeof index === 'number' ? (bank.value[index + 1] ?? null) : null
-  const saved = typeof index === 'number' ? bank.value[index] : null
+  const snap = SNAP_PX / pxPerSec()
 
   if (mode === 'start') {
-    // Joined chops move together, so closing one gap doesn't open another.
-    const joined = saved && prev && Math.abs(prev.endSec - saved.startSec) < LINK_TOL
+    const pi = typeof index === 'number' ? prevPadIndex(index) : -1
+    const prev = pi >= 0 ? bank.value[pi] : null
     let at = Math.max(0, Math.min(t, cur.endSec - MIN_LEN))
-    if (joined && prev) at = Math.max(at, prev.startSec + MIN_LEN)
+
+    if (prev) {
+      // Drag within snapping distance and the two edges meet; carry on past
+      // and the neighbour is pushed along, so a gap can be closed by hand
+      // and not just inherited from chopping.
+      if (Math.abs(at - prev.endSec) <= snap) at = prev.endSec
+      if (at <= prev.endSec + 1e-6) {
+        at = Math.max(at, prev.startSec + MIN_LEN)
+        draft.value = { index, range: { ...cur, startSec: at } }
+        draftNeighbour.value = { index: pi, range: { ...prev, endSec: at } }
+        return
+      }
+    }
     draft.value = { index, range: { ...cur, startSec: at } }
-    draftNeighbour.value =
-      joined && prev ? { index: (index as number) - 1, range: { ...prev, endSec: at } } : null
+    draftNeighbour.value = null
   } else {
-    const joined = saved && next && Math.abs(next.startSec - saved.endSec) < LINK_TOL
+    const ni = typeof index === 'number' ? nextPadIndex(index) : -1
+    const next = ni >= 0 ? bank.value[ni] : null
     let at = Math.min(total.value, Math.max(t, cur.startSec + MIN_LEN))
-    if (joined && next) at = Math.min(at, next.endSec - MIN_LEN)
+
+    if (next) {
+      if (Math.abs(at - next.startSec) <= snap) at = next.startSec
+      if (at >= next.startSec - 1e-6) {
+        at = Math.min(at, next.endSec - MIN_LEN)
+        draft.value = { index, range: { ...cur, endSec: at } }
+        draftNeighbour.value = { index: ni, range: { ...next, startSec: at } }
+        return
+      }
+    }
     draft.value = { index, range: { ...cur, endSec: at } }
-    draftNeighbour.value =
-      joined && next ? { index: (index as number) + 1, range: { ...next, startSec: at } } : null
+    draftNeighbour.value = null
   }
 }
 
@@ -468,11 +502,8 @@ function cancelArm() {
 }
 
 function padDown(i: number, e: PointerEvent) {
-  // Mid-chop, any pad is the cut button and must fire instantly.
-  if (lazy.value) {
-    lazyCut()
-    return
-  }
+  // The chop overlay sits above the grid, so this can't fire mid-chop.
+  if (lazy.value) return
 
   focus.value = i
   const existing = bank.value[i]
@@ -882,6 +913,28 @@ const focusLabel = computed(() =>
       </p>
     </div>
 
+    <!-- Chopping turns the whole screen into the cut button. Aiming at a
+         particular pad was misleading — a cut always lands on the next one
+         in sequence, never on whichever pad was tapped. -->
+    <template v-if="lazy">
+      <div
+        class="fixed inset-0 z-40"
+        @pointerdown.prevent="lazyCut"
+      />
+      <div class="fixed inset-x-0 bottom-0 z-50 px-4 pb-safe pt-3">
+        <p class="text-center text-[12px] text-flag mb-2">
+          Tap anywhere to cut · {{ lazyNextPad }} chopped
+        </p>
+        <button
+          class="w-full h-14 rounded-lg bg-flag text-ink-900 text-[15px] font-semibold
+                 active:scale-[0.99] transition-transform"
+          @pointerdown.stop.prevent="endLazyChop"
+        >
+          DONE CHOPPING
+        </button>
+      </div>
+    </template>
+
     <template v-else-if="sampler.buffer.value">
       <div class="flex-none px-4 pt-1">
         <div
@@ -956,23 +1009,6 @@ const focusLabel = computed(() =>
             :style="{ left: `${pct(sampler.playhead.value)}%` }"
           />
 
-          <p
-            v-if="lazy"
-            class="absolute inset-x-0 bottom-0 text-center text-[10px] py-0.5
-                   text-ink-900 bg-flag/90 pointer-events-none"
-          >
-            Tap any pad to cut · {{ lazyNextPad }} chopped
-          </p>
-        </div>
-
-        <div v-if="lazy" class="mt-2">
-          <button
-            class="w-full h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
-                   active:scale-[0.99] transition-transform"
-            @click="endLazyChop"
-          >
-            DONE CHOPPING
-          </button>
         </div>
 
         <div
