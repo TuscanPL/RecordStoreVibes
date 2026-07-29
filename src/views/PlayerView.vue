@@ -136,19 +136,68 @@ async function openTrack(index: number) {
   await audio.load(record.value, t, true)
 }
 
-function onScrubStart() {
+/**
+ * Seconds either side of the playhead shown in the magnifier. A fixed time
+ * window rather than a fraction, so it means the same thing on a 3-minute
+ * 78 and a 50-minute set.
+ */
+const ZOOM_HALF_SEC = 8
+
+const scrubBar = ref<HTMLElement | null>(null)
+
+function timeFromPointer(e: PointerEvent): number {
+  const el = scrubBar.value
+  if (!el || total.value <= 0) return 0
+  const r = el.getBoundingClientRect()
+  const frac = (e.clientX - r.left) / r.width
+  return Math.min(1, Math.max(0, frac)) * total.value
+}
+
+const canScrub = computed(() => isCurrent.value && total.value > 0)
+
+function onScrubDown(e: PointerEvent) {
+  if (!canScrub.value) return
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   scrubbing.value = true
-  scrubValue.value = audio.position.value
+  scrubValue.value = timeFromPointer(e)
 }
 
-function onScrubInput(e: Event) {
-  scrubValue.value = Number((e.target as HTMLInputElement).value)
+function onScrubMove(e: PointerEvent) {
+  if (!scrubbing.value) return
+  scrubValue.value = timeFromPointer(e)
 }
 
-function onScrubEnd() {
+/** Commit on release, so holding to read the magnifier doesn't jump you. */
+function onScrubUp(e: PointerEvent) {
+  if (!scrubbing.value) return
   audio.seek(scrubValue.value)
   scrubbing.value = false
+  try {
+    ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  } catch {
+    // capture may already be gone
+  }
 }
+
+function onScrubKey(e: KeyboardEvent) {
+  if (!canScrub.value) return
+  const step = e.shiftKey ? 30 : 5
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault()
+    audio.nudge(-step)
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault()
+    audio.nudge(step)
+  }
+}
+
+/** Magnifier window as track fractions. Allowed past 0..1 to stay centred. */
+const zoomRange = computed(() => {
+  if (total.value <= 0) return { start: 0, end: 1 }
+  const centre = displayPos.value / total.value
+  const half = ZOOM_HALF_SEC / total.value
+  return { start: centre - half, end: centre + half }
+})
 
 /** The core interaction. One tap, no modal, no confirmation. */
 function flag() {
@@ -340,30 +389,48 @@ watch(trackIndex, () => {
       <div class="flex-none px-5 pt-3 pb-safe bg-ink-800 border-t border-ink-700">
         <!-- Waveform when loaded, flat bar when not — same scrub surface. -->
         <div
-          class="relative flex items-center transition-all duration-300"
-          :class="wave.peaks.value ? 'h-14' : 'h-6'"
+          ref="scrubBar"
+          class="scrub relative flex items-center transition-[height] duration-300"
+          :class="[wave.peaks.value ? 'h-14' : 'h-6', canScrub ? '' : 'opacity-40']"
+          role="slider"
+          tabindex="0"
+          aria-label="Seek"
+          :aria-valuemin="0"
+          :aria-valuemax="Math.round(total)"
+          :aria-valuenow="Math.round(displayPos)"
+          :aria-valuetext="formatTime(displayPos)"
+          @pointerdown="onScrubDown"
+          @pointermove="onScrubMove"
+          @pointerup="onScrubUp"
+          @pointercancel="onScrubUp"
+          @keydown="onScrubKey"
         >
           <div class="absolute inset-0">
-            <Waveform
-              :peaks="wave.peaks.value"
-              :progress="pct"
-              :markers="markerPercents"
-            />
+            <Waveform :peaks="wave.peaks.value" :progress="pct" :markers="markerPercents" />
           </div>
-          <input
-            type="range"
-            min="0"
-            :max="total || 1"
-            step="0.5"
-            :value="displayPos"
-            class="scrub absolute inset-x-0 w-full appearance-none bg-transparent"
-            :disabled="!isCurrent || total === 0"
-            aria-label="Seek"
-            @pointerdown="onScrubStart"
-            @input="onScrubInput"
-            @change="onScrubEnd"
-            @pointerup="onScrubEnd"
-          />
+
+          <!-- Magnifier: hold to read the exact spot before committing. -->
+          <div
+            v-if="scrubbing"
+            class="absolute bottom-full mb-2 -translate-x-1/2 pointer-events-none z-10"
+            :style="{ left: `clamp(76px, ${pct}%, calc(100% - 76px))` }"
+          >
+            <div class="w-[152px] rounded-lg bg-ink-900/95 border border-ink-500 shadow-xl p-1.5">
+              <div v-if="wave.peaks.value" class="h-9 rounded overflow-hidden bg-ink-800">
+                <Waveform
+                  :peaks="wave.peaks.value"
+                  :progress="pct"
+                  :markers="markerPercents"
+                  :range-start="zoomRange.start"
+                  :range-end="zoomRange.end"
+                  dense
+                />
+              </div>
+              <p class="text-center text-[15px] tabular-nums text-cream leading-tight mt-1">
+                {{ formatTime(displayPos) }}
+              </p>
+            </div>
+          </div>
         </div>
 
         <div class="flex justify-between items-center text-[11px] text-flag-dim tabular-nums mt-1">
@@ -462,29 +529,23 @@ watch(trackIndex, () => {
 }
 
 /*
- * The thumb is invisible and 1px wide; the visible playhead is painted on
- * the canvas underneath.
+ * Dragging is handled with pointer events rather than a native range input.
  *
- * Width matters more than looks here. A range input insets its thumb so it
- * can't overflow the track, so the thumb's centre travels (width - thumbW)
- * while the waveform spans the full width. At 24px that pushed the line up
- * to 12px away from the audio it pointed at, worst at the start and end of
- * a track. At 1px the inset is half a pixel.
+ * A range input insets its thumb so it can't overflow the track, so its
+ * value maps to (width - thumbWidth) while the waveform spans the full
+ * width — the finger and the playhead could never line up, worst at the
+ * ends of a track. Reading pointer x directly makes that mapping exact.
  *
- * Interaction is unaffected: the whole input is the touch target, not the
- * thumb, so tapping and dragging anywhere on the bar still works.
+ * touch-action: none is what actually makes the drag work on a phone;
+ * without it the browser claims the gesture for scrolling.
  */
-.scrub::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 1px;
-  height: 100%;
-  background: transparent;
-  border: none;
+.scrub {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.scrub::-moz-range-thumb {
-  width: 1px;
-  height: 100%;
-  background: transparent;
-  border: none;
+.scrub:focus-visible {
+  outline: 2px solid #8a7454;
+  outline-offset: 3px;
 }
 </style>
