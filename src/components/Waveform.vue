@@ -1,15 +1,28 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { watch, onMounted, onBeforeUnmount, useTemplateRef } from 'vue'
 
-const props = defineProps<{
-  peaks: Float32Array | null
-  /** 0..100 */
-  progress: number
-  /** Marker positions as 0..100. */
-  markers: number[]
-}>()
+const props = withDefaults(
+  defineProps<{
+    peaks: Float32Array | null
+    /** Playhead position, 0..100. */
+    progress: number
+    /** Marker positions, each 0..100. */
+    markers: number[]
+    /**
+     * Slice of the track to draw, as 0..1 fractions. Defaults to all of it.
+     * The magnifier passes a narrow window, and may pass values outside
+     * 0..1 near the ends so its centre stays honest — anything out of
+     * bounds simply isn't drawn.
+     */
+    rangeStart?: number
+    rangeEnd?: number
+    /** Thinner bars suit the magnifier's short window. */
+    dense?: boolean
+  }>(),
+  { rangeStart: 0, rangeEnd: 1, dense: false },
+)
 
-const canvas = ref<HTMLCanvasElement | null>(null)
+const canvas = useTemplateRef<HTMLCanvasElement>('canvas')
 let observer: ResizeObserver | null = null
 
 /*
@@ -43,54 +56,60 @@ function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
 
+  const from = props.rangeStart
+  const span = Math.max(1e-6, props.rangeEnd - from)
+  /** Track fraction (0..1) → x. One mapping for bars, flags and playhead. */
+  const toX = (f: number) => ((f - from) / span) * w
+
   const mid = h / 2
   const peaks = props.peaks
+  const playFrac = props.progress / 100
 
   if (!peaks) {
-    // No waveform loaded — plain bar, same as before.
     ctx.fillStyle = UNPLAYED
     ctx.fillRect(0, mid - 3, w, 6)
     ctx.fillStyle = PLAYED
-    ctx.fillRect(0, mid - 3, w * (props.progress / 100), 6)
+    const px = Math.max(0, Math.min(w, toX(playFrac)))
+    ctx.fillRect(0, mid - 3, px, 6)
   } else {
-    const bars = Math.min(peaks.length, Math.max(40, Math.floor(w / 2)))
+    const step = props.dense ? 2 : 3
+    const bars = Math.max(24, Math.floor(w / step))
     const barW = w / bars
-    const gap = barW > 3 ? 1 : 0
-    const playedX = w * (props.progress / 100)
+    const gap = barW > 2.5 ? 1 : 0
 
     for (let i = 0; i < bars; i++) {
-      const p = peaks[Math.floor((i / bars) * peaks.length)] ?? 0
+      const f = from + ((i + 0.5) / bars) * span
+      if (f < 0 || f > 1) continue
+      const p = peaks[Math.min(peaks.length - 1, Math.floor(f * peaks.length))] ?? 0
       // Floor keeps silence visible as a hairline rather than nothing.
       const barH = Math.max(2, p * (h - 2))
-      const x = i * barW
-      ctx.fillStyle = x + barW <= playedX ? PLAYED : UNPLAYED
-      ctx.fillRect(x, mid - barH / 2, Math.max(1, barW - gap), barH)
+      ctx.fillStyle = f <= playFrac ? PLAYED : UNPLAYED
+      ctx.fillRect(i * barW, mid - barH / 2, Math.max(1, barW - gap), barH)
     }
   }
 
   // Flags: amber, full height, centred on the timestamp.
   ctx.fillStyle = MARKER
   for (const m of props.markers) {
-    const x = (m / 100) * w
+    const x = toX(m / 100)
+    if (x < -2 || x > w + 2) continue
     ctx.fillRect(Math.min(w - 2, Math.max(0, x - 1)), 0, 2, h)
   }
 
-  // Playhead last, so it rides over the flags it passes.
-  //
-  // Drawn here rather than relying on the range input's thumb: the browser
-  // insets that thumb so it can't overflow the track, giving it a travel of
-  // (w - thumbWidth) against the bars' full w. That put the line up to half
-  // a thumb-width away from the audio it was pointing at — worst at the
-  // start and end of a track. Everything on this canvas shares one linear
-  // time -> x mapping instead.
-  const hx = Math.min(w - 1.5, Math.max(1.5, (props.progress / 100) * w))
-  ctx.fillStyle = HEAD_EDGE
-  ctx.fillRect(hx - 2.5, 0, 5, h)
-  ctx.fillStyle = HEAD
-  ctx.fillRect(hx - 1.5, 0, 3, h)
+  // Playhead last, so it rides over any flag it passes.
+  const hx = toX(playFrac)
+  if (hx >= -3 && hx <= w + 3) {
+    const cx = Math.min(w - 1.5, Math.max(1.5, hx))
+    ctx.fillStyle = HEAD_EDGE
+    ctx.fillRect(cx - 2.5, 0, 5, h)
+    ctx.fillStyle = HEAD
+    ctx.fillRect(cx - 1.5, 0, 3, h)
+  }
 }
 
-watch(() => [props.peaks, props.progress, props.markers], draw, { deep: true })
+watch(() => [props.peaks, props.progress, props.markers, props.rangeStart, props.rangeEnd], draw, {
+  deep: true,
+})
 
 onMounted(() => {
   draw()
