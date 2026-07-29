@@ -210,6 +210,12 @@ function flag() {
   }, 1600)
 }
 
+/** True when playback is sitting on this flag, within a beat or so. */
+function atMarker(m: Marker): boolean {
+  if (!isCurrent.value || !track.value || m.trackName !== track.value.name) return false
+  return Math.abs(audio.position.value - m.timestampSec) < 1.5
+}
+
 /** Jump back to something already flagged, switching track if needed. */
 async function jumpTo(m: Marker) {
   const i = record.value?.tracks.findIndex(t => t.name === m.trackName) ?? -1
@@ -325,15 +331,23 @@ watch(trackIndex, () => {
               :key="m.id"
               class="flex items-center gap-2 px-3 py-2 border-t border-ink-700/40"
             >
+              <!-- The jump target. Bordered and carrying a glyph so it reads
+                   as something to press, not just a printed timestamp. -->
               <button
-                class="flex-none h-9 px-2 rounded text-[13px] tabular-nums text-flag
-                       active:bg-ink-700 text-left"
+                class="flex-none h-9 pl-1.5 pr-2 rounded border inline-flex items-center gap-1
+                       text-[13px] tabular-nums transition-colors"
+                :class="atMarker(m)
+                  ? 'bg-flag text-ink-900 border-flag'
+                  : 'text-flag border-ink-500 active:bg-ink-700'"
                 :aria-label="`Jump to ${formatTime(m.timestampSec)}`"
                 @click="jumpTo(m)"
               >
+                <svg class="w-3 h-3 flex-none" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
                 <span
                   v-if="record.tracks.length > 1 && trackNoFor(m)"
-                  class="text-ink-500 text-[11px] mr-1"
+                  class="text-[11px] opacity-60"
                 >
                   {{ trackNoFor(m) }}·
                 </span>
