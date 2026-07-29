@@ -2,6 +2,7 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import BrowseView from './views/BrowseView.vue'
 import PlayerView from './views/PlayerView.vue'
 import FlaggedView from './views/FlaggedView.vue'
+import SamplerView from './views/SamplerView.vue'
 
 /**
  * Hash history: this deploys to GitHub Pages, which has no rewrite rules,
@@ -12,6 +13,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'browse', component: BrowseView },
     { path: '/r/:id', name: 'player', component: PlayerView, props: true },
+    { path: '/r/:id/pads/:track', name: 'sampler', component: SamplerView, props: true },
     { path: '/flagged', name: 'flagged', component: FlaggedView },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

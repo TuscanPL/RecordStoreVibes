@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { Record as CrateRecord, Marker } from '../providers/types'
-import { load, save, newId, type Persisted } from './storage'
+import { load, save, newId, padKey, PAD_COUNT, type Persisted, type Pad } from './storage'
 
 export interface FlaggedGroup {
   record: CrateRecord
@@ -15,6 +15,7 @@ export const useLibrary = defineStore('library', () => {
   const markers = ref<Marker[]>(initial.markers)
   const starred = ref<{ [id: string]: number }>(initial.starred)
   const unplayable = ref<string[]>(initial.unplayable)
+  const pads = ref<{ [trackKey: string]: (Pad | null)[] }>(initial.pads)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
 
@@ -25,16 +26,28 @@ export const useLibrary = defineStore('library', () => {
       markers: markers.value,
       starred: starred.value,
       unplayable: unplayable.value,
+      pads: pads.value,
     }
   }
 
   watch(
-    [records, markers, starred, unplayable],
+    [records, markers, starred, unplayable, pads],
     () => {
       persistFailed.value = !save(snapshot())
     },
     { deep: true },
   )
+
+  function padsFor(key: string): (Pad | null)[] {
+    return pads.value[key] ?? new Array(PAD_COUNT).fill(null)
+  }
+
+  function setPad(key: string, index: number, pad: Pad | null) {
+    const bank = [...padsFor(key)]
+    bank[index] = pad
+    if (bank.every(p => p === null)) delete pads.value[key]
+    else pads.value[key] = bank
+  }
 
   /** Remembered so a dud item never surfaces in a listing again. */
   function markUnplayable(id: string) {
@@ -142,9 +155,13 @@ export const useLibrary = defineStore('library', () => {
     markers,
     starred,
     unplayable,
+    pads,
     persistFailed,
     markUnplayable,
     isUnplayable,
+    padsFor,
+    setPad,
+    padKey,
     remember,
     dropMarker,
     removeMarker,

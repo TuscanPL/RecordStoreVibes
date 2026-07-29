@@ -1,0 +1,180 @@
+import { ref, shallowRef } from 'vue'
+import type { Pad } from '../stores/storage'
+import { toPeaks } from './useWaveform'
+
+/**
+ * Peak decoded PCM we're willing to hold. Decoding is what limits this, not
+ * downloading: float32 stereo at 44.1kHz is ~0.35 MB per second, so an hour
+ * would be 1.2 GB and would take the tab out.
+ */
+const PCM_BUDGET = 150 * 1024 * 1024
+
+/** Below this, resampling has destroyed too much to judge a sample by. */
+const MIN_RATE = 6000
+const NATIVE_RATE = 44100
+
+/** Past this the decode can't be made to fit at a rate worth listening to. */
+export const SAMPLER_MAX_SEC = 60 * 60
+
+/**
+ * Highest rate whose decode fits the budget. Short tracks — 78s, songs, the
+ * things you'd most want to chop — come through untouched; only long sets
+ * get resampled, and the view says so.
+ */
+export function decodeRateFor(durationSec: number): number {
+  if (durationSec <= 0) return NATIVE_RATE
+  // Assume stereo: we can't know the channel count until it's decoded, and
+  // guessing low is what blows the budget.
+  const fits = Math.floor(PCM_BUDGET / (durationSec * 2 * 4))
+  return Math.max(MIN_RATE, Math.min(NATIVE_RATE, fits))
+}
+
+export function semitonesToRate(semitones: number): number {
+  return Math.pow(2, semitones / 12)
+}
+
+let ctx: AudioContext | null = null
+function audioCtx(): AudioContext {
+  if (!ctx) ctx = new AudioContext()
+  return ctx
+}
+
+const buffer = shallowRef<AudioBuffer | null>(null)
+const peaks = shallowRef<Float32Array | null>(null)
+const loadedUrl = ref<string | null>(null)
+const loading = ref(false)
+const progress = ref<number | null>(null)
+const error = ref<string | null>(null)
+const rate = ref(0)
+const playing = ref<number | null>(null)
+
+/** Mute group: exactly one voice, so a new hit cuts the last. */
+let voice: AudioBufferSourceNode | null = null
+
+export function useSampler() {
+  function stop() {
+    if (voice) {
+      voice.onended = null
+      try {
+        voice.stop()
+      } catch {
+        // already finished
+      }
+      voice.disconnect()
+      voice = null
+    }
+    playing.value = null
+  }
+
+  /** Frees the decoded audio — it's the largest thing the app ever holds. */
+  function release() {
+    stop()
+    buffer.value = null
+    peaks.value = null
+    loadedUrl.value = null
+    rate.value = 0
+    progress.value = null
+    error.value = null
+  }
+
+  async function load(url: string, durationSec: number) {
+    if (loadedUrl.value === url && buffer.value) return
+    release()
+
+    if (durationSec > SAMPLER_MAX_SEC) {
+      error.value = "Too long to load for sampling — flag the spot and cut it from the download."
+      return
+    }
+
+    loading.value = true
+    progress.value = 0
+
+    try {
+      const res = await fetch(url)
+      if (!res.ok) throw new Error(String(res.status))
+
+      const total = Number(res.headers.get('content-length')) || 0
+      let bytes: ArrayBuffer
+
+      if (res.body && total > 0) {
+        const reader = res.body.getReader()
+        const chunks: Uint8Array[] = []
+        let got = 0
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          chunks.push(value)
+          got += value.length
+          progress.value = Math.min(1, got / total)
+        }
+        const merged = new Uint8Array(got)
+        let at = 0
+        for (const c of chunks) {
+          merged.set(c, at)
+          at += c.length
+        }
+        bytes = merged.buffer
+      } else {
+        bytes = await res.arrayBuffer()
+      }
+
+      progress.value = null
+      const target = decodeRateFor(durationSec)
+
+      // decodeAudioData resamples to the context's rate, which is the whole
+      // trick — the resampling happens inside the decoder rather than after.
+      const Offline: typeof OfflineAudioContext =
+        (window as any).OfflineAudioContext || (window as any).webkitOfflineAudioContext
+      let decoded: AudioBuffer
+      try {
+        decoded = await new Offline(1, 1, target).decodeAudioData(bytes.slice(0))
+      } catch {
+        // Some WebKit builds reject unusual offline rates; native is the
+        // fallback and is safe for the short tracks that hit this path.
+        decoded = await audioCtx().decodeAudioData(bytes.slice(0))
+      }
+
+      buffer.value = decoded
+      rate.value = decoded.sampleRate
+      peaks.value = toPeaks(decoded, 900)
+      loadedUrl.value = url
+    } catch {
+      error.value = "Couldn't load this track for sampling."
+      buffer.value = null
+    } finally {
+      loading.value = false
+      progress.value = null
+    }
+  }
+
+  /** Plays a region. `index` is only for showing which pad is lit. */
+  function play(pad: Pad, index: number | null = null) {
+    const buf = buffer.value
+    if (!buf) return
+    const c = audioCtx()
+    if (c.state === 'suspended') void c.resume()
+
+    stop()
+
+    const start = Math.max(0, Math.min(pad.startSec, buf.duration))
+    const span = Math.max(0.02, Math.min(pad.endSec, buf.duration) - start)
+
+    const src = c.createBufferSource()
+    src.buffer = buf
+    src.playbackRate.value = semitonesToRate(pad.pitch)
+    src.connect(c.destination)
+    src.onended = () => {
+      if (voice === src) {
+        voice = null
+        playing.value = null
+      }
+    }
+    // Third argument is buffer time, so a pitched-up hit finishes sooner —
+    // varispeed, the way a sampler's pitch control actually behaves.
+    src.start(0, start, span)
+    voice = src
+    playing.value = index
+  }
+
+  return { buffer, peaks, loading, progress, error, rate, playing, load, play, stop, release }
+}
