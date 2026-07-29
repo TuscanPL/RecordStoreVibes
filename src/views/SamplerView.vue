@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { provider } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { PAD_COUNT, padKey, type Pad } from '../stores/storage'
-import { useSampler } from '../composables/useSampler'
+import { useSampler, semitonesToRate } from '../composables/useSampler'
+import { makeZip, type ZipEntry } from '../lib/zip'
+import { encodeWav } from '../lib/wav'
+import { formatBytes } from '../composables/useWaveform'
 import { useAudio, formatTime } from '../composables/useAudio'
 import Waveform from '../components/Waveform.vue'
 
@@ -256,11 +259,19 @@ function setPitch(semitones: number) {
 
 /* ---- flags ---- */
 
-/** Lengths offered when turning a flag into a trim. */
-const FLAG_LENGTHS = [0.5, 1, 2, 4, 8]
-
 const flagsOpen = ref(false)
-const flagLength = ref(2)
+
+/**
+ * Held as the raw string so typing isn't fought mid-keystroke — clamping
+ * "0" up to a minimum while someone is on their way to "0.75" makes the
+ * field unusable. Parsed and bounded only at the point of use.
+ */
+const flagLengthInput = ref('2')
+
+const flagLength = computed(() => {
+  const n = parseFloat(flagLengthInput.value)
+  return Number.isFinite(n) && n > 0 ? n : 2
+})
 
 const trackFlags = computed(() =>
   record.value ? library.markersFor(record.value.id, trackName.value) : [],
@@ -275,7 +286,8 @@ const flagPercents = computed(() =>
 function useFlag(atSec: number) {
   if (total.value <= 0) return
   const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
-  trim.value = { startSec: start, endSec: Math.min(total.value, start + flagLength.value) }
+  const end = Math.max(start + MIN_LEN, Math.min(total.value, start + flagLength.value))
+  trim.value = { startSec: start, endSec: end }
   zoomed.value = true
   commitTrim()
   playTrim()
@@ -373,6 +385,197 @@ function endLazyChop() {
     lazyNextPad.value++
   }
   sampler.stop()
+}
+
+/* ---- export ---- */
+
+const exporting = ref(false)
+const exportNote = ref<string | null>(null)
+
+/**
+ * Whether pitched pads export as they sound, or as the raw region.
+ *
+ * Applied matches what was auditioned; dry keeps the untouched material for
+ * a sampler that will do its own pitching. Only offered when some pad is
+ * actually pitched — otherwise the choice means nothing.
+ */
+const applyPitch = ref(true)
+const hasPitchedPads = computed(() => bank.value.some(p => p && p.pitch !== 0))
+
+interface Archive {
+  blob: Blob
+  filename: string
+  files: number
+  bytes: number
+}
+
+/**
+ * The built archive, held until it's sent somewhere.
+ *
+ * Preparing and sending are separate steps on purpose. iOS only allows
+ * navigator.share() while a tap is still "active", and encoding a bank of
+ * WAVs takes long enough to burn that through — so the share would be
+ * rejected and the sheet never appear. Building first means the send
+ * happens directly inside its own tap.
+ */
+const archive = ref<Archive | null>(null)
+
+const exportable = computed(() => !!trim.value || bank.value.some(p => p !== null))
+
+const canShareFiles = computed(() => typeof navigator.canShare === 'function')
+
+function safeName(text: string): string {
+  return text.replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+}
+
+// Any edit makes the built archive stale, so it goes.
+watch([bank, trim, applyPitch], () => {
+  archive.value = null
+})
+
+/**
+ * Everything cut from this track, as WAVs in a zip with a manifest.
+ *
+ * The manifest keeps the untouched timestamps, the semitone values and the
+ * archive.org URL, so anything can be re-cut at full fidelity from the
+ * original regardless of what was exported here.
+ */
+async function prepareArchive() {
+  const buf = sampler.buffer.value
+  if (!buf || exporting.value) return
+
+  exporting.value = true
+  exportNote.value = null
+
+  try {
+    // Yield once so the button paints its busy state before the encode.
+    await new Promise(r => setTimeout(r, 0))
+
+    const entries: ZipEntry[] = []
+    const manifestPads: unknown[] = []
+
+    if (trim.value) {
+      entries.push({
+        name: 'trim.wav',
+        data: encodeWav(buf, trim.value.startSec, trim.value.endSec),
+      })
+    }
+
+    bank.value.forEach((pad, i) => {
+      if (!pad) return
+      const name = `pad-${String(i + 1).padStart(2, '0')}.wav`
+      entries.push({
+        name,
+        data: encodeWav(
+          buf,
+          pad.startSec,
+          pad.endSec,
+          applyPitch.value ? semitonesToRate(pad.pitch) : 1,
+        ),
+      })
+      manifestPads.push({
+        pad: i + 1,
+        file: name,
+        startSec: Number(pad.startSec.toFixed(3)),
+        endSec: Number(pad.endSec.toFixed(3)),
+        pitchSemitones: pad.pitch,
+        pitchApplied: applyPitch.value && pad.pitch !== 0,
+      })
+    })
+
+    const manifest = {
+      generatedAt: new Date().toISOString(),
+      source: {
+        identifier: props.id,
+        title: record.value?.title ?? props.id,
+        creator: record.value?.creator ?? 'Unknown',
+        track: trackName.value,
+        details: record.value?.sourceUrl,
+        download: `https://archive.org/download/${props.id}/${encodeURIComponent(trackName.value)}`,
+      },
+      audio: {
+        sampleRate: buf.sampleRate,
+        channels: buf.numberOfChannels,
+        bitDepth: 16,
+        note:
+          buf.sampleRate < 44100
+            ? `Cut from a ${(buf.sampleRate / 1000).toFixed(1)}kHz decode, which is how a track this long fits in memory. Re-cut from the download URL for full fidelity.`
+            : 'Cut at the source rate.',
+      },
+      pitch: applyPitch.value
+        ? 'Applied — pads are resampled to the pitch they were auditioned at.'
+        : 'Not applied — pads are the raw regions; pitchSemitones says what was set.',
+      trim: trim.value
+        ? {
+            file: 'trim.wav',
+            startSec: Number(trim.value.startSec.toFixed(3)),
+            endSec: Number(trim.value.endSec.toFixed(3)),
+          }
+        : null,
+      pads: manifestPads,
+    }
+
+    entries.push({
+      name: 'manifest.json',
+      data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
+    })
+
+    const dry = hasPitchedPads.value && !applyPitch.value ? '-dry' : ''
+    const blob = makeZip(entries)
+
+    archive.value = {
+      blob,
+      filename: `crate-${safeName(props.id)}-${safeName(trackName.value)}${dry}.zip`,
+      files: entries.length,
+      bytes: blob.size,
+    }
+  } catch {
+    exportNote.value = "Couldn't build the archive."
+  } finally {
+    exporting.value = false
+  }
+}
+
+/**
+ * Hands the file to whatever will take it — Mail, Files, Dropbox, Drive,
+ * anything registered for the type. Called with nothing awaited before it,
+ * or iOS treats the tap as expired and refuses.
+ */
+function sendArchive() {
+  const built = archive.value
+  if (!built) return
+  const file = new File([built.blob], built.filename, { type: 'application/zip' })
+
+  if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+    navigator
+      .share({ files: [file], title: built.filename })
+      .then(() => {
+        exportNote.value = 'Sent'
+        setTimeout(() => (exportNote.value = null), 3000)
+      })
+      .catch((err: unknown) => {
+        // Dismissing the sheet isn't a failure worth reporting.
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        exportNote.value = 'Sharing unavailable — saved instead.'
+        saveArchive()
+      })
+    return
+  }
+  saveArchive()
+}
+
+/** Straight to the download folder, for anywhere the share sheet isn't. */
+function saveArchive() {
+  const built = archive.value
+  if (!built) return
+  const url = URL.createObjectURL(built.blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = built.filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /* ---- geometry ---- */
@@ -489,7 +692,11 @@ const trimLength = computed(() =>
           <!-- The trim: the range chopping works inside. -->
           <template v-if="trim">
             <div
-              class="absolute inset-y-0 bg-cream/10 border-x-2 border-cream pointer-events-none"
+              class="absolute inset-y-0 border-x-2 border-cream pointer-events-none
+                     transition-colors"
+              :class="sampler.active.value && sampler.playing.value === null
+                ? 'bg-cream/30'
+                : 'bg-cream/10'"
               :style="{
                 left: `${pct(trim.startSec)}%`,
                 width: `${pct(trim.endSec) - pct(trim.startSec)}%`,
@@ -498,7 +705,7 @@ const trimLength = computed(() =>
           </template>
 
           <div
-            v-if="sampler.playing.value !== null || lazy"
+            v-if="sampler.active.value || lazy"
             class="absolute inset-y-0 w-0.5 bg-flag pointer-events-none"
             :style="{ left: `${pct(sampler.playhead.value)}%` }"
           />
@@ -615,19 +822,19 @@ const trimLength = computed(() =>
           </button>
 
           <div v-if="flagsOpen" class="px-3 pb-3">
-            <div class="flex items-center gap-1.5 mb-2">
-              <span class="text-[10px] text-ink-500 mr-0.5">LENGTH</span>
-              <button
-                v-for="len in FLAG_LENGTHS"
-                :key="len"
-                class="flex-1 h-8 rounded text-[11px] tabular-nums border transition-colors"
-                :class="flagLength === len
-                  ? 'bg-flag text-ink-900 border-flag font-medium'
-                  : 'border-ink-500 text-flag-soft active:bg-ink-700'"
-                @click="flagLength = len"
-              >
-                {{ len }}s
-              </button>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-[10px] text-ink-500">LENGTH</span>
+              <input
+                v-model="flagLengthInput"
+                type="number"
+                inputmode="decimal"
+                step="0.1"
+                min="0.1"
+                class="w-24 h-9 px-2 rounded bg-ink-700 text-cream text-[15px] tabular-nums
+                       border border-ink-600 focus:outline-none focus:border-flag-dim"
+                aria-label="Trim length in seconds"
+              />
+              <span class="text-[12px] text-flag-dim">seconds</span>
             </div>
 
             <button
@@ -682,6 +889,68 @@ const trimLength = computed(() =>
             </span>
           </button>
         </div>
+
+        <!-- Only worth asking when something is actually pitched. -->
+        <div
+          v-if="exportable && !lazy && hasPitchedPads"
+          class="flex items-center gap-2 mt-3"
+        >
+          <span class="text-[10px] text-ink-500 flex-none">PITCH</span>
+          <button
+            v-for="opt in [true, false]"
+            :key="String(opt)"
+            class="flex-1 h-9 rounded text-[12px] border transition-colors"
+            :class="applyPitch === opt
+              ? 'bg-flag text-ink-900 border-flag font-medium'
+              : 'border-ink-500 text-flag-soft active:bg-ink-700'"
+            @click="applyPitch = opt"
+          >
+            {{ opt ? 'Applied' : 'Dry' }}
+          </button>
+        </div>
+
+        <template v-if="exportable && !lazy">
+          <button
+            v-if="!archive"
+            class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                   active:scale-[0.99] transition-transform disabled:opacity-50"
+            :disabled="exporting"
+            @click="prepareArchive"
+          >
+            {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
+          </button>
+
+          <!-- Built and waiting. Sending is its own tap so iOS still counts
+               it as user-initiated. -->
+          <div v-else class="mt-2">
+            <p class="text-center text-[11px] text-flag-dim mb-2">
+              {{ archive.filename }} · {{ archive.files }} files ·
+              {{ formatBytes(archive.bytes) }}
+            </p>
+            <div class="flex gap-2">
+              <button
+                v-if="canShareFiles"
+                class="flex-1 h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                       active:scale-[0.99] transition-transform"
+                @click="sendArchive"
+              >
+                Send to…
+              </button>
+              <button
+                class="h-12 rounded-lg border border-ink-500 text-flag-soft text-[13px]
+                       active:bg-ink-700"
+                :class="canShareFiles ? 'px-5' : 'flex-1'"
+                @click="saveArchive"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <p v-if="exportNote" class="text-center text-[11px] text-flag mt-2">
+          {{ exportNote }}
+        </p>
 
         <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
           Set a trim, then CHOP it. An empty pad takes a copy of the trim.

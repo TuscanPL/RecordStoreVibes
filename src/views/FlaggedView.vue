@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useLibrary } from '../stores/library'
 import { formatTime } from '../composables/useAudio'
 import { useExport } from '../composables/useExport'
+import { downloadedBytes, clearDownloads } from '../composables/useSampler'
+import { formatBytes } from '../composables/useWaveform'
 
 const library = useLibrary()
 const { exportJson, exportCsv, trackUrl } = useExport()
@@ -10,6 +12,17 @@ const { exportJson, exportCsv, trackUrl } = useExport()
 const expanded = ref<string | null>(null)
 const showStarred = ref(false)
 const showChopped = ref(false)
+const held = ref(0)
+
+async function refreshHeld() {
+  held.value = await downloadedBytes()
+}
+onMounted(refreshHeld)
+
+async function wipeDownloads() {
+  await clearDownloads()
+  await refreshHeld()
+}
 
 const groups = computed(() => library.flagged)
 const hasAnything = computed(() => groups.value.length > 0)
@@ -227,6 +240,26 @@ function fileCount(markers: { trackName: string }[]): number {
             </div>
           </router-link>
         </template>
+      </div>
+
+      <!-- What's playable with no network, and a way to reclaim the space. -->
+      <div
+        v-if="held > 0"
+        class="flex items-center gap-3 px-4 py-3 mt-2 border-t border-ink-700/40"
+      >
+        <div class="flex-1 min-w-0">
+          <p class="text-[12px] uppercase tracking-wider text-flag-dim">Downloads</p>
+          <p class="text-[11px] text-ink-500">
+            {{ formatBytes(held) }} kept for offline chopping
+          </p>
+        </div>
+        <button
+          class="px-3 h-9 rounded-full border border-ink-500 text-[12px] text-flag-soft
+                 active:bg-ink-700"
+          @click="wipeDownloads"
+        >
+          Clear
+        </button>
       </div>
 
       <div class="h-4" />

@@ -19,7 +19,7 @@ export default {
         cream: '#f2ece0',
       },
       fontFamily: {
-        display: ['"Playfair Display"', 'Georgia', 'serif'],
+        display: ['Georgia', '"Times New Roman"', 'serif'],
       },
     },
   },

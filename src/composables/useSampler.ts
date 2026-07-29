@@ -34,29 +34,125 @@ export function semitonesToRate(semitones: number): number {
 }
 
 /**
- * Downloaded bytes, kept for the session so a track is only pulled once.
+ * Downloaded bytes, kept so a track is only ever pulled once.
  *
  * Compressed bytes, not decoded audio: a 10-minute MP3 is ~10 MB here versus
- * ~150 MB decoded, so several tracks fit in the space one buffer would take.
+ * ~150 MB decoded, so many tracks fit in the space one buffer would take.
  * Re-decoding on return costs a second or two and no data.
+ *
+ * Two tiers. The Map is this tab's fast path; Cache Storage is the durable
+ * one, so a download survives a refresh and works with no network at all.
  */
 const byteCache = new Map<string, ArrayBuffer>()
-const BYTE_CACHE_MAX = 100 * 1024 * 1024
+const MEMORY_MAX = 100 * 1024 * 1024
 
-function cacheBytes(url: string, bytes: ArrayBuffer) {
+const AUDIO_CACHE = 'crate-audio-v1'
+/** Kept modest: iOS is stingy with origin storage and evicts without asking. */
+const DISK_MAX = 200 * 1024 * 1024
+
+function rememberInMemory(url: string, bytes: ArrayBuffer) {
   byteCache.set(url, bytes)
   let held = 0
   for (const b of byteCache.values()) held += b.byteLength
   // Oldest out first — Map iterates in insertion order.
   for (const k of byteCache.keys()) {
-    if (held <= BYTE_CACHE_MAX) break
+    if (held <= MEMORY_MAX) break
     held -= byteCache.get(k)!.byteLength
     byteCache.delete(k)
   }
 }
 
-export function isDownloaded(url: string): boolean {
-  return byteCache.has(url)
+function cacheStorage(): CacheStorage | null {
+  // Absent on insecure origins and in some private modes.
+  return typeof caches !== 'undefined' ? caches : null
+}
+
+async function readFromDisk(url: string): Promise<ArrayBuffer | null> {
+  const cs = cacheStorage()
+  if (!cs) return null
+  try {
+    const cache = await cs.open(AUDIO_CACHE)
+    const hit = await cache.match(url)
+    return hit ? await hit.arrayBuffer() : null
+  } catch {
+    return null
+  }
+}
+
+async function writeToDisk(url: string, bytes: ArrayBuffer) {
+  const cs = cacheStorage()
+  if (!cs) return
+  try {
+    const cache = await cs.open(AUDIO_CACHE)
+    await cache.put(
+      url,
+      // Length recorded so pruning doesn't have to read every body back.
+      new Response(bytes, { headers: { 'x-bytes': String(bytes.byteLength) } }),
+    )
+    await pruneDisk(cache)
+  } catch {
+    // Over quota or storage unavailable: the memory tier still works.
+  }
+}
+
+async function pruneDisk(cache: Cache) {
+  const keys = await cache.keys()
+  const sized: Array<[Request, number]> = []
+  let total = 0
+  for (const k of keys) {
+    const r = await cache.match(k)
+    const n = Number(r?.headers.get('x-bytes')) || 0
+    sized.push([k, n])
+    total += n
+  }
+  for (const [k, n] of sized) {
+    if (total <= DISK_MAX) break
+    await cache.delete(k)
+    total -= n
+  }
+}
+
+/** Whether a track plays without the network. */
+export async function isAvailableOffline(url: string): Promise<boolean> {
+  if (byteCache.has(url)) return true
+  const cs = cacheStorage()
+  if (!cs) return false
+  try {
+    const cache = await cs.open(AUDIO_CACHE)
+    return !!(await cache.match(url))
+  } catch {
+    return false
+  }
+}
+
+/** Frees every stored download. */
+export async function clearDownloads(): Promise<void> {
+  byteCache.clear()
+  const cs = cacheStorage()
+  if (cs) {
+    try {
+      await cs.delete(AUDIO_CACHE)
+    } catch {
+      // nothing to do
+    }
+  }
+}
+
+/** Bytes currently held on disk, for showing what's been kept. */
+export async function downloadedBytes(): Promise<number> {
+  const cs = cacheStorage()
+  if (!cs) return 0
+  try {
+    const cache = await cs.open(AUDIO_CACHE)
+    let total = 0
+    for (const k of await cache.keys()) {
+      const r = await cache.match(k)
+      total += Number(r?.headers.get('x-bytes')) || 0
+    }
+    return total
+  } catch {
+    return 0
+  }
 }
 
 let ctx: AudioContext | null = null
@@ -72,7 +168,17 @@ const loading = ref(false)
 const progress = ref<number | null>(null)
 const error = ref<string | null>(null)
 const rate = ref(0)
+/** Which pad is lit. Null for trim playback, which belongs to no pad. */
 const playing = ref<number | null>(null)
+
+/**
+ * Whether any voice is running at all.
+ *
+ * Separate from `playing` because that carries a pad index, and the trim
+ * isn't a pad — keying the playhead off `playing` meant Play and Roll made
+ * sound while nothing on screen moved.
+ */
+const active = ref(false)
 
 /**
  * Where the current voice is, in buffer seconds. AudioBufferSourceNode
@@ -112,6 +218,7 @@ export function useSampler() {
       voice = null
     }
     playing.value = null
+    active.value = false
   }
 
   /**
@@ -142,12 +249,12 @@ export function useSampler() {
     progress.value = 0
 
     try {
-      const cached = byteCache.get(url)
-      let bytes: ArrayBuffer
+      let bytes: ArrayBuffer | null = byteCache.get(url) ?? null
+      if (!bytes) bytes = await readFromDisk(url)
 
-      if (cached) {
-        // Already pulled this session — straight to decoding.
-        bytes = cached
+      if (bytes) {
+        // Already downloaded — straight to decoding, no network needed.
+        rememberInMemory(url, bytes)
         progress.value = null
       } else {
       const res = await fetch(url)
@@ -176,7 +283,8 @@ export function useSampler() {
       } else {
         bytes = await res.arrayBuffer()
       }
-      cacheBytes(url, bytes)
+      rememberInMemory(url, bytes)
+      void writeToDisk(url, bytes)
       }
 
       progress.value = null
@@ -231,6 +339,7 @@ export function useSampler() {
       if (voice === src) {
         voice = null
         playing.value = null
+        active.value = false
         if (raf !== null) {
           cancelAnimationFrame(raf)
           raf = null
@@ -243,6 +352,7 @@ export function useSampler() {
     src.start(0, start, span)
     voice = src
     playing.value = index
+    active.value = true
 
     voiceStartedAt = c.currentTime
     voiceOffset = start
@@ -259,6 +369,7 @@ export function useSampler() {
     error,
     rate,
     playing,
+    active,
     playhead,
     load,
     play,

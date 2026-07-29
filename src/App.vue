@@ -5,6 +5,11 @@ import { useLibrary } from './stores/library'
 import { useAudio } from './composables/useAudio'
 import NowPlaying from './components/NowPlaying.vue'
 
+/** Surfaced so a failing search reads as "no network", not "app broken". */
+const online = ref(navigator.onLine)
+window.addEventListener('online', () => (online.value = true))
+window.addEventListener('offline', () => (online.value = false))
+
 const route = useRoute()
 const library = useLibrary()
 const audio = useAudio()
@@ -40,6 +45,13 @@ watch(
 
 <template>
   <div class="h-full flex flex-col bg-ink-900">
+    <p
+      v-if="!online"
+      class="flex-none text-center text-[11px] py-1 bg-ink-700 text-flag-soft"
+    >
+      Offline — downloaded tracks still play
+    </p>
+
     <router-view class="flex-1 min-h-0" />
 
     <NowPlaying v-if="showTabs && carry" />
