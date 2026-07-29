@@ -7,7 +7,7 @@ import {
   newId,
   padKey,
   PAD_COUNT,
-  PAD_SETS,
+  PAD_BANKS,
   type Persisted,
   type Pad,
   type TrimState,
@@ -58,25 +58,37 @@ export const useLibrary = defineStore('library', () => {
     { deep: true },
   )
 
-  function padsFor(key: string, set = 0): (Pad | null)[] {
-    return pads.value[key]?.[set] ?? new Array(PAD_COUNT).fill(null)
+  function padsFor(key: string, bank = 0): (Pad | null)[] {
+    return pads.value[key]?.[bank] ?? new Array(PAD_COUNT).fill(null)
   }
 
-  function setPad(key: string, set: number, index: number, pad: Pad | null) {
-    const sets: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
-    while (sets.length <= set) sets.push(new Array(PAD_COUNT).fill(null))
-    sets[set]![index] = pad
-    // Drop the whole track once every set is empty, so gc can reclaim it.
-    if (sets.every(b => b.every(p => p === null))) delete pads.value[key]
-    else pads.value[key] = sets
+  function writeBanks(key: string, banks: (Pad | null)[][]) {
+    // Drop the whole track once every bank is empty, so gc can reclaim it.
+    if (banks.every(b => b.every(p => p === null))) delete pads.value[key]
+    else pads.value[key] = banks
   }
 
-  /** How many pads each set of a track holds, for the set switcher. */
-  function setCounts(key: string): number[] {
-    const sets = pads.value[key] ?? []
+  function setPad(key: string, bank: number, index: number, pad: Pad | null) {
+    const banks: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
+    while (banks.length <= bank) banks.push(new Array(PAD_COUNT).fill(null))
+    banks[bank]![index] = pad
+    writeBanks(key, banks)
+  }
+
+  /** Empties one bank, leaving the others alone. */
+  function clearBank(key: string, bank: number) {
+    const banks: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
+    if (!banks[bank]) return
+    banks[bank] = new Array(PAD_COUNT).fill(null)
+    writeBanks(key, banks)
+  }
+
+  /** How many pads each bank of a track holds, for the switcher. */
+  function bankCounts(key: string): number[] {
+    const banks = pads.value[key] ?? []
     return Array.from(
-      { length: PAD_SETS },
-      (_, i) => sets[i]?.filter(Boolean).length ?? 0,
+      { length: PAD_BANKS },
+      (_, i) => banks[i]?.filter(Boolean).length ?? 0,
     )
   }
 
@@ -205,7 +217,7 @@ export const useLibrary = defineStore('library', () => {
       const at = k.indexOf('::')
       const recordId = k.slice(0, at)
       const record = records.value[recordId]
-      const count = bank.reduce((n, set) => n + set.filter(Boolean).length, 0)
+      const count = bank.reduce((n, b) => n + b.filter(Boolean).length, 0)
       if (!record || count === 0) continue
       out.push({ key: k, recordId, trackName: k.slice(at + 2), count, record })
     }
@@ -224,7 +236,8 @@ export const useLibrary = defineStore('library', () => {
     isUnplayable,
     padsFor,
     setPad,
-    setCounts,
+    bankCounts,
+    clearBank,
     trimFor,
     setTrim,
     padKey,

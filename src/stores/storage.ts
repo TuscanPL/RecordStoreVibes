@@ -18,7 +18,7 @@ export interface TrimState {
 
 export const PAD_COUNT = 16
 /** Banks of pads per track, switched by swiping the grid. */
-export const PAD_SETS = 4
+export const PAD_BANKS = 4
 
 /** Pads belong to a track: one decoded buffer in memory, never sixteen. */
 export function padKey(recordId: string, trackName: string): string {
@@ -60,8 +60,8 @@ const EMPTY: Persisted = {
 
 /**
  * Pads used to be one flat bank per track. A stored entry whose first
- * element isn't itself an array is from before sets existed, so it becomes
- * set one and the rest start empty.
+ * element isn't itself an array predates banks, so it becomes bank A and
+ * the rest start empty.
  */
 function migratePads(raw: unknown): { [k: string]: (Pad | null)[][] } {
   const out: { [k: string]: (Pad | null)[][] } = {}
