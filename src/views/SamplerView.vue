@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
 import { provider } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
@@ -8,6 +8,7 @@ import { PAD_COUNT, padKey, type Pad } from '../stores/storage'
 import { useSampler, semitonesToRate } from '../composables/useSampler'
 import { makeZip, type ZipEntry } from '../lib/zip'
 import { encodeWav } from '../lib/wav'
+import { formatBytes } from '../composables/useWaveform'
 import { useAudio, formatTime } from '../composables/useAudio'
 import Waveform from '../components/Waveform.vue'
 
@@ -401,22 +402,45 @@ const exportNote = ref<string | null>(null)
 const applyPitch = ref(true)
 const hasPitchedPads = computed(() => bank.value.some(p => p && p.pitch !== 0))
 
+interface Archive {
+  blob: Blob
+  filename: string
+  files: number
+  bytes: number
+}
+
+/**
+ * The built archive, held until it's sent somewhere.
+ *
+ * Preparing and sending are separate steps on purpose. iOS only allows
+ * navigator.share() while a tap is still "active", and encoding a bank of
+ * WAVs takes long enough to burn that through — so the share would be
+ * rejected and the sheet never appear. Building first means the send
+ * happens directly inside its own tap.
+ */
+const archive = ref<Archive | null>(null)
+
+const exportable = computed(() => !!trim.value || bank.value.some(p => p !== null))
+
+const canShareFiles = computed(() => typeof navigator.canShare === 'function')
+
 function safeName(text: string): string {
   return text.replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
 }
 
-const exportable = computed(
-  () => !!trim.value || bank.value.some(p => p !== null),
-)
+// Any edit makes the built archive stale, so it goes.
+watch([bank, trim, applyPitch], () => {
+  archive.value = null
+})
 
 /**
  * Everything cut from this track, as WAVs in a zip with a manifest.
  *
- * Pads export with their pitch applied, because that's the sound that was
- * auditioned. The manifest keeps the untouched timestamps and the source
- * URL, so anything can be re-cut at full fidelity from the original.
+ * The manifest keeps the untouched timestamps, the semitone values and the
+ * archive.org URL, so anything can be re-cut at full fidelity from the
+ * original regardless of what was exported here.
  */
-async function exportChops() {
+async function prepareArchive() {
   const buf = sampler.buffer.value
   if (!buf || exporting.value) return
 
@@ -497,44 +521,61 @@ async function exportChops() {
     })
 
     const dry = hasPitchedPads.value && !applyPitch.value ? '-dry' : ''
-    const filename = `crate-${safeName(props.id)}-${safeName(trackName.value)}${dry}.zip`
     const blob = makeZip(entries)
 
-    // The native share sheet is both requirements at once: Save to Files
-    // and Mail sit side by side in it.
-    const file = new File([blob], filename, { type: 'application/zip' })
-    const canShare =
-      typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })
-
-    if (canShare) {
-      try {
-        await navigator.share({ files: [file], title: filename })
-        exportNote.value = `${entries.length} files shared`
-        return
-      } catch (err) {
-        // Dismissing the sheet is not a failure worth shouting about.
-        if (err instanceof DOMException && err.name === 'AbortError') {
-          exportNote.value = null
-          return
-        }
-      }
+    archive.value = {
+      blob,
+      filename: `crate-${safeName(props.id)}-${safeName(trackName.value)}${dry}.zip`,
+      files: entries.length,
+      bytes: blob.size,
     }
-
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-    exportNote.value = `${entries.length} files downloaded`
   } catch {
-    exportNote.value = "Couldn't build the export."
+    exportNote.value = "Couldn't build the archive."
   } finally {
     exporting.value = false
-    setTimeout(() => (exportNote.value = null), 4000)
   }
+}
+
+/**
+ * Hands the file to whatever will take it — Mail, Files, Dropbox, Drive,
+ * anything registered for the type. Called with nothing awaited before it,
+ * or iOS treats the tap as expired and refuses.
+ */
+function sendArchive() {
+  const built = archive.value
+  if (!built) return
+  const file = new File([built.blob], built.filename, { type: 'application/zip' })
+
+  if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+    navigator
+      .share({ files: [file], title: built.filename })
+      .then(() => {
+        exportNote.value = 'Sent'
+        setTimeout(() => (exportNote.value = null), 3000)
+      })
+      .catch((err: unknown) => {
+        // Dismissing the sheet isn't a failure worth reporting.
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        exportNote.value = 'Sharing unavailable — saved instead.'
+        saveArchive()
+      })
+    return
+  }
+  saveArchive()
+}
+
+/** Straight to the download folder, for anywhere the share sheet isn't. */
+function saveArchive() {
+  const built = archive.value
+  if (!built) return
+  const url = URL.createObjectURL(built.blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = built.filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 /* ---- geometry ---- */
@@ -868,15 +909,45 @@ const trimLength = computed(() =>
           </button>
         </div>
 
-        <button
-          v-if="exportable && !lazy"
-          class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
-                 active:scale-[0.99] transition-transform disabled:opacity-50"
-          :disabled="exporting"
-          @click="exportChops"
-        >
-          {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
-        </button>
+        <template v-if="exportable && !lazy">
+          <button
+            v-if="!archive"
+            class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                   active:scale-[0.99] transition-transform disabled:opacity-50"
+            :disabled="exporting"
+            @click="prepareArchive"
+          >
+            {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
+          </button>
+
+          <!-- Built and waiting. Sending is its own tap so iOS still counts
+               it as user-initiated. -->
+          <div v-else class="mt-2">
+            <p class="text-center text-[11px] text-flag-dim mb-2">
+              {{ archive.filename }} · {{ archive.files }} files ·
+              {{ formatBytes(archive.bytes) }}
+            </p>
+            <div class="flex gap-2">
+              <button
+                v-if="canShareFiles"
+                class="flex-1 h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                       active:scale-[0.99] transition-transform"
+                @click="sendArchive"
+              >
+                Send to…
+              </button>
+              <button
+                class="h-12 rounded-lg border border-ink-500 text-flag-soft text-[13px]
+                       active:bg-ink-700"
+                :class="canShareFiles ? 'px-5' : 'flex-1'"
+                @click="saveArchive"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </template>
+
         <p v-if="exportNote" class="text-center text-[11px] text-flag mt-2">
           {{ exportNote }}
         </p>
