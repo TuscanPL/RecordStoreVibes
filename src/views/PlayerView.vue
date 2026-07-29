@@ -5,11 +5,19 @@ import { provider } from '../providers'
 import type { Record as CrateRecord, Marker } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { useAudio, formatTime } from '../composables/useAudio'
+import {
+  useWaveform,
+  waveformTier,
+  estimateBytes,
+  formatBytes,
+} from '../composables/useWaveform'
+import Waveform from '../components/Waveform.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 const library = useLibrary()
 const audio = useAudio()
+const wave = useWaveform()
 
 const record = ref<CrateRecord | null>(null)
 const loading = ref(true)
@@ -47,6 +55,30 @@ function trackNoFor(m: Marker): number | null {
   const i = record.value?.tracks.findIndex(t => t.name === m.trackName) ?? -1
   return i < 0 ? null : i + 1
 }
+
+const tier = computed(() => waveformTier(total.value))
+const showWaveButton = computed(
+  () => !wave.peaks.value && !wave.loading.value && tier.value !== 'too-long',
+)
+const waveCost = computed(() => formatBytes(estimateBytes(total.value)))
+
+/** Marker positions as percentages, for the waveform overlay. */
+const markerPercents = computed(() =>
+  total.value > 0
+    ? trackMarkers.value.map(m => (m.timestampSec / total.value) * 100)
+    : [],
+)
+
+function loadWave() {
+  if (track.value) void wave.load(track.value.streamUrl)
+}
+
+// A different file means a different waveform. Cached ones come back free.
+watch(
+  () => track.value?.streamUrl ?? null,
+  url => wave.reset(url),
+  { immediate: true },
+)
 
 const total = computed(() => audio.effectiveDuration.value)
 const displayPos = computed(() => (scrubbing.value ? scrubValue.value : audio.position.value))
@@ -295,19 +327,18 @@ watch(trackIndex, () => {
 
       <!-- Bottom third: all controls. -->
       <div class="flex-none px-5 pt-3 pb-safe bg-ink-800 border-t border-ink-700">
-        <div class="relative h-6 flex items-center">
-          <div class="absolute inset-x-0 h-1.5 rounded-full bg-ink-600" />
-          <div
-            class="absolute left-0 h-1.5 rounded-full bg-flag-dim"
-            :style="{ width: `${pct}%` }"
-          />
-          <!-- Flagged spots, so you can see what you've already caught. -->
-          <div
-            v-for="m in trackMarkers"
-            :key="m.id"
-            class="absolute w-0.5 h-3.5 bg-flag rounded-full pointer-events-none"
-            :style="{ left: `${total > 0 ? (m.timestampSec / total) * 100 : 0}%` }"
-          />
+        <!-- Waveform when loaded, flat bar when not — same scrub surface. -->
+        <div
+          class="relative flex items-center transition-all duration-300"
+          :class="wave.peaks.value ? 'h-14' : 'h-6'"
+        >
+          <div class="absolute inset-0">
+            <Waveform
+              :peaks="wave.peaks.value"
+              :progress="pct"
+              :markers="markerPercents"
+            />
+          </div>
           <input
             type="range"
             min="0"
@@ -324,8 +355,30 @@ watch(trackIndex, () => {
           />
         </div>
 
-        <div class="flex justify-between text-[11px] text-flag-dim tabular-nums mt-1">
+        <div class="flex justify-between items-center text-[11px] text-flag-dim tabular-nums mt-1">
           <span>{{ formatTime(displayPos) }}</span>
+
+          <!-- Opt-in, and honest about what it costs before you tap it. -->
+          <button
+            v-if="showWaveButton"
+            class="px-2 h-6 rounded border border-ink-500 text-[10px] tracking-wide
+                   text-flag-soft active:bg-ink-700"
+            @click="loadWave"
+          >
+            WAVEFORM<span v-if="tier === 'offered'" class="text-ink-500"> ~{{ waveCost }}</span>
+          </button>
+
+          <span v-else-if="wave.loading.value" class="text-[10px] text-flag-soft">
+            <template v-if="wave.progress.value !== null">
+              {{ Math.round(wave.progress.value * 100) }}%
+            </template>
+            <template v-else>decoding…</template>
+          </span>
+
+          <span v-else-if="wave.error.value" class="text-[10px] text-red-300/70">
+            no waveform
+          </span>
+
           <span>{{ total ? formatTime(total) : '--:--' }}</span>
         </div>
 
@@ -391,8 +444,10 @@ watch(trackIndex, () => {
 <style scoped>
 /* Invisible native range on top of the drawn track — native touch dragging
    without fighting the browser's own thumb rendering. */
+/* Fills whatever height the container is, so you can drag anywhere on the
+   waveform rather than only on a thin strip. */
 .scrub {
-  height: 24px;
+  height: 100%;
 }
 .scrub::-webkit-slider-thumb {
   -webkit-appearance: none;
