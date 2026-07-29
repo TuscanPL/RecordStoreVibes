@@ -6,36 +6,37 @@ import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { PAD_COUNT, padKey, type Pad } from '../stores/storage'
 import { useSampler } from '../composables/useSampler'
-import { formatTime } from '../composables/useAudio'
+import { useAudio, formatTime } from '../composables/useAudio'
 import Waveform from '../components/Waveform.vue'
 
 const props = defineProps<{ id: string; track: string }>()
 const router = useRouter()
 const library = useLibrary()
 const sampler = useSampler()
+const audio = useAudio()
 
 const record = ref<CrateRecord | null>(null)
 const loadError = ref<string | null>(null)
 
-/** Working sample. Edited by the trim and pitch controls. */
-const sel = ref<Pad>({ startSec: 0, endSec: 2, pitch: 0 })
-const activePad = ref<number | null>(null)
+/** The pad being worked on. Dragging the waveform writes into this one. */
+const activePad = ref(0)
 
 const trackName = computed(() => decodeURIComponent(props.track))
 const key = computed(() => padKey(props.id, trackName.value))
 const bank = computed(() => library.padsFor(key.value))
 const total = computed(() => sampler.buffer.value?.duration ?? 0)
+const current = computed<Pad | null>(() => bank.value[activePad.value] ?? null)
 
 const trackMeta = computed(
   () => record.value?.tracks.find(t => t.name === trackName.value) ?? null,
 )
 
-/** Shown so a resampled decode is never a silent downgrade. */
-const degraded = computed(
-  () => sampler.rate.value > 0 && sampler.rate.value < 44100,
-)
+const degraded = computed(() => sampler.rate.value > 0 && sampler.rate.value < 44100)
 
 onMounted(async () => {
+  // Entering the pads stops the record — two sources at once helps nobody.
+  audio.pause()
+
   try {
     const fetched = await provider.getRecord(props.id)
     if (!fetched) {
@@ -49,21 +50,22 @@ onMounted(async () => {
       return
     }
     await sampler.load(t.streamUrl, t.durationSec ?? 0)
-    if (sampler.buffer.value) {
-      sel.value = { startSec: 0, endSec: Math.min(2, sampler.buffer.value.duration), pitch: 0 }
-    }
   } catch {
     loadError.value = "Couldn't open the sampler for this track."
   }
 })
 
-// The decoded buffer is the largest thing the app holds — never leave it behind.
 onBeforeUnmount(() => sampler.release())
 
-/* ---- selecting a region on the waveform ---- */
+/* ---- the strip ---- */
 
 const strip = ref<HTMLElement | null>(null)
-let dragFrom: number | null = null
+/** null = not dragging, 'new' = fresh region, 'start'/'end' = trimming an edge. */
+let mode: 'new' | 'start' | 'end' | null = null
+let anchor = 0
+
+const EDGE_GRAB_PX = 18
+const MIN_LEN = 0.05
 
 function timeAt(e: PointerEvent): number {
   const el = strip.value
@@ -72,91 +74,180 @@ function timeAt(e: PointerEvent): number {
   return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * total.value
 }
 
+function pxPerSec(): number {
+  const el = strip.value
+  if (!el || total.value <= 0) return 1
+  return el.getBoundingClientRect().width / total.value
+}
+
+function writePad(pad: Pad) {
+  library.setPad(key.value, activePad.value, pad)
+}
+
 function onDown(e: PointerEvent) {
-  if (!sampler.buffer.value) return
+  if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-  dragFrom = timeAt(e)
-  sel.value = { ...sel.value, startSec: dragFrom, endSec: dragFrom + 0.05 }
+  const t = timeAt(e)
+
+  // Near an edge of the current chop? Trim it instead of starting a new one.
+  const cur = current.value
+  if (cur) {
+    const scale = pxPerSec()
+    if (Math.abs(t - cur.startSec) * scale < EDGE_GRAB_PX) {
+      mode = 'start'
+      return
+    }
+    if (Math.abs(t - cur.endSec) * scale < EDGE_GRAB_PX) {
+      mode = 'end'
+      return
+    }
+  }
+
+  mode = 'new'
+  anchor = t
+  writePad({ startSec: t, endSec: t + MIN_LEN, pitch: cur?.pitch ?? 0 })
 }
 
 function onMove(e: PointerEvent) {
-  if (dragFrom === null) return
+  if (!mode) return
   const t = timeAt(e)
-  sel.value = {
-    ...sel.value,
-    startSec: Math.min(dragFrom, t),
-    endSec: Math.max(dragFrom + 0.05, Math.max(dragFrom, t)),
+  const cur = current.value
+  if (!cur) return
+
+  if (mode === 'new') {
+    writePad({
+      ...cur,
+      startSec: Math.min(anchor, t),
+      endSec: Math.max(anchor + MIN_LEN, Math.max(anchor, t)),
+    })
+  } else if (mode === 'start') {
+    writePad({ ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) })
+  } else {
+    writePad({ ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) })
   }
 }
 
 function onUp(e: PointerEvent) {
-  if (dragFrom === null) return
-  dragFrom = null
+  if (!mode) return
+  mode = null
   try {
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
   } catch {
     // capture already gone
   }
-  writeThrough()
-  preview()
+  if (current.value) sampler.play(current.value, activePad.value)
 }
 
-/** Nudge either edge. Coarse on a phone is fine; the ear does the rest. */
+/* ---- trim / pitch ---- */
+
 function nudge(edge: 'startSec' | 'endSec', delta: number) {
-  const next = { ...sel.value }
+  const cur = current.value
+  if (!cur) return
+  const next = { ...cur }
   next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
-  if (next.endSec - next.startSec < 0.05) return
-  sel.value = next
-  writeThrough()
+  if (next.endSec - next.startSec < MIN_LEN) return
+  writePad(next)
 }
 
 function setPitch(semitones: number) {
-  sel.value = { ...sel.value, pitch: Math.max(-12, Math.min(12, semitones)) }
-  writeThrough()
-}
-
-/** Edits land on the selected pad live, so there's no separate save step. */
-function writeThrough() {
-  if (activePad.value !== null && bank.value[activePad.value]) {
-    library.setPad(key.value, activePad.value, { ...sel.value })
-  }
-}
-
-function preview() {
-  sampler.play(sel.value, activePad.value)
+  const cur = current.value
+  if (!cur) return
+  writePad({ ...cur, pitch: Math.max(-12, Math.min(12, semitones)) })
 }
 
 /* ---- pads ---- */
 
 function hitPad(i: number) {
-  const existing = bank.value[i]
-  if (existing) {
-    activePad.value = i
-    sel.value = { ...existing }
-    sampler.play(existing, i)
-  } else {
-    // Empty pad takes whatever's currently trimmed.
-    const pad = { ...sel.value }
-    library.setPad(key.value, i, pad)
-    activePad.value = i
-    sampler.play(pad, i)
+  // Mid-chop, any pad is the cut button.
+  if (lazy.value) {
+    lazyCut()
+    return
   }
+  const existing = bank.value[i]
+  activePad.value = i
+  if (existing) sampler.play(existing, i)
 }
 
 function clearPad(i: number) {
   library.setPad(key.value, i, null)
-  if (activePad.value === i) activePad.value = null
 }
 
-const selPercents = computed(() => {
-  if (total.value <= 0) return { left: 0, width: 0 }
-  return {
-    left: (sel.value.startSec / total.value) * 100,
-    width: ((sel.value.endSec - sel.value.startSec) / total.value) * 100,
-  }
-})
+/* ---- lazy chop ---- */
 
-const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
+/**
+ * Lazy chopping: the trimmed range plays through and every pad tap cuts at
+ * the playhead. The first chop starts at the trim's start whether you tap
+ * or not, each tap closes one chop and opens the next, and the last runs to
+ * the trim's end — so N taps give N+1 chops filling pads in order.
+ *
+ * Not the same as evenly spaced auto-slicing; the point is that the cuts
+ * land where you heard them, not on a grid.
+ */
+const lazy = ref(false)
+const lazyRange = ref({ start: 0, end: 0 })
+/** Cut points so far. Always begins with the range start. */
+const lazyBounds = ref<number[]>([])
+const lazyNextPad = ref(0)
+
+const MIN_CHOP = 0.05
+
+function startLazyChop() {
+  if (lazy.value) {
+    endLazyChop()
+    return
+  }
+  const cur = current.value
+  const start = cur ? cur.startSec : 0
+  const end = cur ? cur.endSec : total.value
+  if (end - start < MIN_CHOP * 2) return
+
+  // Captured before clearing: the range lives in a pad we're about to wipe.
+  lazyRange.value = { start, end }
+  lazyBounds.value = [start]
+  lazyNextPad.value = 0
+  for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
+
+  lazy.value = true
+  sampler.play({ startSec: start, endSec: end, pitch: 0 }, null, endLazyChop)
+}
+
+/** One tap: close the open chop at the playhead, open the next. */
+function lazyCut() {
+  const t = sampler.playhead.value
+  const last = lazyBounds.value[lazyBounds.value.length - 1] ?? lazyRange.value.start
+  if (t - last < MIN_CHOP) return
+  if (lazyNextPad.value >= PAD_COUNT) return
+
+  library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: t, pitch: 0 })
+  lazyNextPad.value++
+  lazyBounds.value.push(t)
+
+  // Bank full — nothing left to cut into.
+  if (lazyNextPad.value >= PAD_COUNT) endLazyChop()
+}
+
+function endLazyChop() {
+  if (!lazy.value) return
+  lazy.value = false
+
+  const last = lazyBounds.value[lazyBounds.value.length - 1] ?? lazyRange.value.start
+  const end = lazyRange.value.end
+  // The final chop always runs to the end of the trim.
+  if (lazyNextPad.value < PAD_COUNT && end - last >= MIN_CHOP) {
+    library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: end, pitch: 0 })
+    lazyNextPad.value++
+  }
+  sampler.stop()
+  activePad.value = 0
+}
+
+function pct(sec: number): number {
+  return total.value > 0 ? (sec / total.value) * 100 : 0
+}
+
+const lengthSec = computed(() =>
+  current.value ? current.value.endSec - current.value.startSec : 0,
+)
 </script>
 
 <template>
@@ -175,6 +266,13 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
         <p class="text-[13px] text-cream truncate">{{ trackMeta?.title ?? 'Pads' }}</p>
         <p class="text-[11px] text-flag-dim truncate">{{ record?.creator }}</p>
       </div>
+      <button
+        class="px-3 h-9 rounded-lg border border-ink-500 text-[11px] tracking-wide
+               text-flag-soft active:bg-ink-700"
+        @click="sampler.stop()"
+      >
+        STOP
+      </button>
     </header>
 
     <p v-if="loadError" class="px-6 py-10 text-center text-[14px] text-red-300/80">
@@ -195,17 +293,14 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
         </template>
         <template v-else>Decoding…</template>
       </p>
-      <p class="text-[11px] text-ink-500 text-center">
-        The whole track has to come down before it can be chopped.
-      </p>
     </div>
 
     <template v-else-if="sampler.buffer.value">
-      <!-- Trim -->
-      <div class="flex-none px-4 pt-2">
+      <div class="flex-none px-4 pt-1">
         <div
           ref="strip"
-          class="sel relative h-20 rounded overflow-hidden bg-ink-800"
+          class="sel relative h-24 rounded overflow-hidden bg-ink-800"
+          :class="lazy ? 'ring-2 ring-flag' : ''"
           @pointerdown="onDown"
           @pointermove="onMove"
           @pointerup="onUp"
@@ -214,77 +309,144 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
           <div class="absolute inset-0">
             <Waveform :peaks="sampler.peaks.value" :progress="0" :markers="[]" />
           </div>
-          <!-- Selected region, drawn over the waveform. -->
+
+          <!-- Every assigned chop, so the whole layout is visible at once.
+               v-if lives on an inner element: v-show would still evaluate the
+               style bindings for empty pads, and v-if on the v-for element
+               itself runs before the loop variable exists. -->
+          <template v-for="(p, i) in bank" :key="i">
+            <div
+              v-if="p"
+              class="absolute inset-y-0 pointer-events-none border-l"
+              :class="[
+                sampler.playing.value === i
+                  ? 'bg-flag/45 border-cream'
+                  : i === activePad
+                    ? 'bg-flag/25 border-flag'
+                    : 'bg-flag/10 border-flag/40',
+              ]"
+              :style="{ left: `${pct(p.startSec)}%`, width: `${pct(p.endSec - p.startSec)}%` }"
+            >
+              <span class="absolute top-0.5 left-1 text-[9px] tabular-nums text-cream/80">
+                {{ i + 1 }}
+              </span>
+            </div>
+          </template>
+
+          <!-- Trim handles on the active chop. -->
+          <template v-if="current">
+            <div
+              class="absolute inset-y-0 w-1 bg-cream pointer-events-none"
+              :style="{ left: `${pct(current.startSec)}%` }"
+            />
+            <div
+              class="absolute inset-y-0 w-1 bg-cream pointer-events-none"
+              :style="{ left: `calc(${pct(current.endSec)}% - 4px)` }"
+            />
+          </template>
+
+          <!-- Live playhead: what the cuts are made against. -->
           <div
-            class="absolute inset-y-0 bg-flag/25 border-x-2 border-flag pointer-events-none"
-            :style="{ left: `${selPercents.left}%`, width: `${selPercents.width}%` }"
+            v-if="sampler.playing.value !== null || lazy"
+            class="absolute inset-y-0 w-0.5 bg-cream pointer-events-none"
+            :style="{ left: `${pct(sampler.playhead.value)}%` }"
           />
+
+          <p
+            v-if="lazy"
+            class="absolute inset-x-0 bottom-0 text-center text-[10px] py-0.5
+                   text-ink-900 bg-flag/90 pointer-events-none"
+          >
+            Tap any pad to cut · {{ lazyNextPad }} chopped
+          </p>
         </div>
 
-        <div class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim">
-          <span>{{ formatTime(sel.startSec) }}</span>
-          <span class="text-flag">{{ lengthSec.toFixed(2) }}s</span>
-          <span>{{ formatTime(sel.endSec) }}</span>
-        </div>
-
-        <div class="flex items-center gap-2 mt-2">
-          <div class="flex-1 flex items-center gap-1">
-            <span class="text-[10px] text-ink-500 w-5">IN</span>
-            <button class="trim" @click="nudge('startSec', -0.25)">−</button>
-            <button class="trim" @click="nudge('startSec', 0.25)">+</button>
-          </div>
+        <div v-if="lazy" class="mt-2">
           <button
-            class="px-4 h-10 rounded-lg bg-ink-600 text-cream text-[13px] active:bg-ink-500"
-            @click="preview"
+            class="w-full h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                   active:scale-[0.99] transition-transform"
+            @click="endLazyChop"
+          >
+            DONE CHOPPING
+          </button>
+        </div>
+
+        <div
+          v-if="!lazy"
+          class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
+        >
+          <span>{{ current ? formatTime(current.startSec) : '—' }}</span>
+          <span class="text-flag">
+            Pad {{ activePad + 1 }} · {{ lengthSec.toFixed(2) }}s
+          </span>
+          <span>{{ current ? formatTime(current.endSec) : '—' }}</span>
+        </div>
+
+        <!-- Trim -->
+        <div v-if="!lazy" class="flex items-center gap-1.5 mt-2">
+          <span class="text-[10px] text-ink-500 w-4">IN</span>
+          <button class="trim" :disabled="!current" @click="nudge('startSec', -0.1)">−</button>
+          <button class="trim" :disabled="!current" @click="nudge('startSec', 0.1)">+</button>
+          <button
+            class="flex-1 h-9 rounded-lg bg-ink-600 text-cream text-[12px] active:bg-ink-500
+                   disabled:opacity-40"
+            :disabled="!current"
+            @click="current && sampler.play(current, activePad)"
           >
             Preview
           </button>
-          <div class="flex-1 flex items-center justify-end gap-1">
-            <button class="trim" @click="nudge('endSec', -0.25)">−</button>
-            <button class="trim" @click="nudge('endSec', 0.25)">+</button>
-            <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
-          </div>
+          <button class="trim" :disabled="!current" @click="nudge('endSec', -0.1)">−</button>
+          <button class="trim" :disabled="!current" @click="nudge('endSec', 0.1)">+</button>
+          <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
         </div>
 
         <!-- Pitch: varispeed, so it shifts length too. -->
-        <div class="flex items-center gap-2 mt-2">
-          <span class="text-[10px] text-ink-500 w-10">PITCH</span>
-          <button class="trim" @click="setPitch(sel.pitch - 1)">−</button>
+        <div v-if="!lazy" class="flex items-center gap-2 mt-2">
+          <span class="text-[10px] text-ink-500 w-9">PITCH</span>
           <input
             type="range"
             min="-12"
             max="12"
             step="1"
-            :value="sel.pitch"
-            class="flex-1 accent-[#d99a4e]"
+            :value="current?.pitch ?? 0"
+            :disabled="!current"
+            class="flex-1 accent-[#d99a4e] disabled:opacity-40"
             aria-label="Pitch in semitones"
             @input="setPitch(Number(($event.target as HTMLInputElement).value))"
           />
-          <button class="trim" @click="setPitch(sel.pitch + 1)">+</button>
-          <span class="w-10 text-right text-[12px] tabular-nums text-flag">
-            {{ sel.pitch > 0 ? '+' : '' }}{{ sel.pitch }}
+          <span class="w-8 text-right text-[12px] tabular-nums text-flag">
+            {{ (current?.pitch ?? 0) > 0 ? '+' : '' }}{{ current?.pitch ?? 0 }}
           </span>
+          <button
+            class="px-2.5 h-9 rounded-lg border text-[10px] tracking-wide active:bg-ink-700"
+            :class="lazy ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
+            title="Play the trim and cut on the fly"
+            @click="startLazyChop"
+          >
+            CHOP
+          </button>
         </div>
       </div>
 
-      <!-- Pads -->
-      <div class="flex-1 min-h-0 px-4 pt-3 pb-safe">
-        <div class="grid grid-cols-4 gap-2 h-full">
+      <!-- Pads: square, so the controls above keep their room. -->
+      <div class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto">
+        <div class="grid grid-cols-4 gap-2">
           <button
             v-for="i in PAD_COUNT"
             :key="i - 1"
-            class="relative rounded-lg border text-[11px] tabular-nums transition-colors"
+            class="relative aspect-square rounded-lg border text-[11px] tabular-nums
+                   flex items-center justify-center transition-colors"
             :class="[
               bank[i - 1]
                 ? 'border-flag bg-flag/15 text-flag'
                 : 'border-ink-600 bg-ink-800 text-ink-500',
               activePad === i - 1 ? 'ring-2 ring-flag' : '',
-              sampler.playing.value === i - 1 ? 'bg-flag text-ink-900' : '',
+              sampler.playing.value === i - 1 ? '!bg-flag !text-ink-900' : '',
             ]"
             @pointerdown="hitPad(i - 1)"
           >
             <span class="absolute top-1 left-1.5 text-[9px] opacity-60">{{ i }}</span>
-            <span v-if="bank[i - 1]">
+            <span v-if="bank[i - 1]" class="leading-tight text-center">
               {{ (bank[i - 1]!.endSec - bank[i - 1]!.startSec).toFixed(1) }}s
               <span v-if="bank[i - 1]!.pitch" class="block text-[9px]">
                 {{ bank[i - 1]!.pitch > 0 ? '+' : '' }}{{ bank[i - 1]!.pitch }}
@@ -292,7 +454,8 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
             </span>
             <span
               v-if="bank[i - 1]"
-              class="absolute top-0 right-0 w-6 h-6 flex items-center justify-center text-ink-500"
+              class="absolute top-0 right-0 w-7 h-7 flex items-center justify-center
+                     text-ink-500 text-[13px]"
               role="button"
               aria-label="Clear pad"
               @pointerdown.stop="clearPad(i - 1)"
@@ -302,9 +465,11 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
           </button>
         </div>
 
-        <p v-if="degraded" class="text-center text-[10px] text-ink-500 mt-2">
-          Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory —
-          fine for judging, cut the real one from the download.
+        <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
+          Tap a pad, then drag the waveform to chop it. Drag an edge to trim.
+          <span v-if="degraded" class="block">
+            Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
+          </span>
         </p>
       </div>
     </template>
@@ -319,6 +484,6 @@ const lengthSec = computed(() => sel.value.endSec - sel.value.startSec)
 }
 .trim {
   @apply w-9 h-9 rounded bg-ink-700 text-cream text-[15px] leading-none
-         active:bg-ink-600 flex-none;
+         active:bg-ink-600 flex-none disabled:opacity-40;
 }
 </style>

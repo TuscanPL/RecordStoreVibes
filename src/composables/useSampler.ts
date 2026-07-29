@@ -33,6 +33,32 @@ export function semitonesToRate(semitones: number): number {
   return Math.pow(2, semitones / 12)
 }
 
+/**
+ * Downloaded bytes, kept for the session so a track is only pulled once.
+ *
+ * Compressed bytes, not decoded audio: a 10-minute MP3 is ~10 MB here versus
+ * ~150 MB decoded, so several tracks fit in the space one buffer would take.
+ * Re-decoding on return costs a second or two and no data.
+ */
+const byteCache = new Map<string, ArrayBuffer>()
+const BYTE_CACHE_MAX = 100 * 1024 * 1024
+
+function cacheBytes(url: string, bytes: ArrayBuffer) {
+  byteCache.set(url, bytes)
+  let held = 0
+  for (const b of byteCache.values()) held += b.byteLength
+  // Oldest out first — Map iterates in insertion order.
+  for (const k of byteCache.keys()) {
+    if (held <= BYTE_CACHE_MAX) break
+    held -= byteCache.get(k)!.byteLength
+    byteCache.delete(k)
+  }
+}
+
+export function isDownloaded(url: string): boolean {
+  return byteCache.has(url)
+}
+
 let ctx: AudioContext | null = null
 function audioCtx(): AudioContext {
   if (!ctx) ctx = new AudioContext()
@@ -48,12 +74,34 @@ const error = ref<string | null>(null)
 const rate = ref(0)
 const playing = ref<number | null>(null)
 
+/**
+ * Where the current voice is, in buffer seconds. AudioBufferSourceNode
+ * doesn't report position, so it's derived from the context clock — this is
+ * what lazy chopping cuts against.
+ */
+const playhead = ref(0)
+
 /** Mute group: exactly one voice, so a new hit cuts the last. */
 let voice: AudioBufferSourceNode | null = null
+let voiceStartedAt = 0
+let voiceOffset = 0
+let voiceRate = 1
+let raf: number | null = null
+
+function trackPlayhead() {
+  if (!voice || !ctx) return
+  playhead.value = voiceOffset + (ctx.currentTime - voiceStartedAt) * voiceRate
+  raf = requestAnimationFrame(trackPlayhead)
+}
 
 export function useSampler() {
   function stop() {
+    if (raf !== null) {
+      cancelAnimationFrame(raf)
+      raf = null
+    }
     if (voice) {
+      // Cleared first so a manual stop never fires the end callback.
       voice.onended = null
       try {
         voice.stop()
@@ -66,7 +114,11 @@ export function useSampler() {
     playing.value = null
   }
 
-  /** Frees the decoded audio — it's the largest thing the app ever holds. */
+  /**
+   * Frees the decoded audio — it's the largest thing the app ever holds, so
+   * it doesn't survive leaving the view. The downloaded bytes do, which is
+   * what makes coming back cheap.
+   */
   function release() {
     stop()
     buffer.value = null
@@ -90,11 +142,18 @@ export function useSampler() {
     progress.value = 0
 
     try {
+      const cached = byteCache.get(url)
+      let bytes: ArrayBuffer
+
+      if (cached) {
+        // Already pulled this session — straight to decoding.
+        bytes = cached
+        progress.value = null
+      } else {
       const res = await fetch(url)
       if (!res.ok) throw new Error(String(res.status))
 
       const total = Number(res.headers.get('content-length')) || 0
-      let bytes: ArrayBuffer
 
       if (res.body && total > 0) {
         const reader = res.body.getReader()
@@ -116,6 +175,8 @@ export function useSampler() {
         bytes = merged.buffer
       } else {
         bytes = await res.arrayBuffer()
+      }
+      cacheBytes(url, bytes)
       }
 
       progress.value = null
@@ -147,8 +208,11 @@ export function useSampler() {
     }
   }
 
-  /** Plays a region. `index` is only for showing which pad is lit. */
-  function play(pad: Pad, index: number | null = null) {
+  /**
+   * Plays a region. `index` is only for showing which pad is lit; `onEnd`
+   * fires on natural completion, not on a manual stop.
+   */
+  function play(pad: Pad, index: number | null = null, onEnd?: () => void) {
     const buf = buffer.value
     if (!buf) return
     const c = audioCtx()
@@ -167,6 +231,11 @@ export function useSampler() {
       if (voice === src) {
         voice = null
         playing.value = null
+        if (raf !== null) {
+          cancelAnimationFrame(raf)
+          raf = null
+        }
+        onEnd?.()
       }
     }
     // Third argument is buffer time, so a pitched-up hit finishes sooner —
@@ -174,7 +243,26 @@ export function useSampler() {
     src.start(0, start, span)
     voice = src
     playing.value = index
+
+    voiceStartedAt = c.currentTime
+    voiceOffset = start
+    voiceRate = src.playbackRate.value
+    playhead.value = start
+    raf = requestAnimationFrame(trackPlayhead)
   }
 
-  return { buffer, peaks, loading, progress, error, rate, playing, load, play, stop, release }
+  return {
+    buffer,
+    peaks,
+    loading,
+    progress,
+    error,
+    rate,
+    playing,
+    playhead,
+    load,
+    play,
+    stop,
+    release,
+  }
 }
