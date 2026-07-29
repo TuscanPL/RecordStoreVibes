@@ -60,6 +60,8 @@ const currentPad = computed<Pad | null>(() =>
 
 /** The range the controls edit — a pad when one is focused, else the trim. */
 const focused = computed<Range | null>(() => {
+  const d = draft.value
+  if (d && d.index === focus.value) return d.range
   if (focus.value === 'trim') return trim.value
   return bank.value[focus.value] ?? null
 })
@@ -150,15 +152,29 @@ let mode: 'new' | 'start' | 'end' | null = null
 let anchor = 0
 
 const EDGE_GRAB_PX = 18
+/** Chops count as joined if their edges are this close. */
+const LINK_TOL = 0.02
 
 /**
  * The view is frozen for the duration of a drag.
  *
- * Zoom frames the trim, so without this the first pointermove rewrites the
- * trim, the window collapses onto the new tiny range, and the rest of the
- * drag maps against a scale that's shrinking under your finger.
+ * Zoom frames what's being edited, so without this the first pointermove
+ * rewrites it, the window collapses onto the new tiny range, and the rest
+ * of the drag maps against a scale that's shrinking under your finger.
  */
 const dragView = ref<{ start: number; end: number } | null>(null)
+
+/**
+ * The in-progress edit, held here rather than written straight through.
+ *
+ * Every store mutation serialises the whole library to localStorage, so
+ * editing a pad on pointermove meant a JSON write per frame — which is what
+ * made dragging a chop feel broken. Nothing is committed until the finger
+ * lifts, and the strip then redraws from what was actually saved.
+ */
+const draft = ref<{ index: 'trim' | number; range: Range } | null>(null)
+/** The joined neighbour, dragged along so the seam stays visibly closed. */
+const draftNeighbour = ref<{ index: number; range: Range } | null>(null)
 
 function activeView(): { start: number; end: number } {
   return dragView.value ?? view.value
@@ -174,6 +190,22 @@ function commitTrim() {
     trim.value ? { ...trim.value, zoomed: zoomed.value } : null,
   )
 }
+
+/** What to draw for a pad — the live edit if it has one, else what's saved. */
+function padRange(i: number): Range | null {
+  if (draft.value && draft.value.index === i) return draft.value.range
+  if (draftNeighbour.value && draftNeighbour.value.index === i) return draftNeighbour.value.range
+  return bank.value[i] ?? null
+}
+
+function trimRange(): Range | null {
+  if (draft.value && draft.value.index === 'trim') return draft.value.range
+  return trim.value
+}
+
+/** Chops as drawn: live edits where they exist, saved values otherwise. */
+const chops = computed<(Range | null)[]>(() => bank.value.map((_, i) => padRange(i)))
+const trimShown = computed<Range | null>(() => trimRange())
 
 function timeAt(e: PointerEvent): number {
   const el = strip.value
@@ -191,71 +223,134 @@ function pxPerSec(): number {
   return el.getBoundingClientRect().width / Math.max(1e-6, v.end - v.start)
 }
 
+/** Topmost chop under a time, so a tap selects what it looks like it hit. */
+function chopAt(t: number): number {
+  return bank.value.findIndex(p => p && t >= p.startSec && t <= p.endSec)
+}
+
+function focusTrim() {
+  focus.value = 'trim'
+}
+
 function onDown(e: PointerEvent) {
   if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   dragView.value = { ...view.value }
   const t = timeAt(e)
+  const scale = pxPerSec()
 
-  // Near an edge of whatever's focused? Adjust it rather than start anew.
+  // 1. An edge of what's focused wins, so a chop can be trimmed in place.
   const cur = focused.value
   if (cur) {
-    const scale = pxPerSec()
     if (Math.abs(t - cur.startSec) * scale < EDGE_GRAB_PX) {
       mode = 'start'
+      draft.value = { index: focus.value, range: { ...cur } }
       return
     }
     if (Math.abs(t - cur.endSec) * scale < EDGE_GRAB_PX) {
       mode = 'end'
+      draft.value = { index: focus.value, range: { ...cur } }
       return
     }
   }
 
-  // Tapping inside the trim hands the controls back to it.
-  const t0 = trim.value
-  if (t0 && t >= t0.startSec && t <= t0.endSec) {
-    focus.value = 'trim'
+  // 2. Tapping a chop selects it. Chops sit inside the trim, so this has to
+  //    come first or every tap would land on the trim instead.
+  const hit = chopAt(t)
+  if (hit >= 0) {
     mode = null
+    focus.value = hit
     playFocused()
     return
   }
 
-  // Anything else draws a new trim, which focuses it by definition.
-  focus.value = 'trim'
+  // 3. Inside the trim but on no chop: back to the trim.
+  const t0 = trim.value
+  if (t0 && t >= t0.startSec && t <= t0.endSec) {
+    mode = null
+    focusTrim()
+    playFocused()
+    return
+  }
+
+  // 4. Bare waveform draws a new trim, which focuses it by definition.
+  focusTrim()
   mode = 'new'
   anchor = t
-  trim.value = { startSec: t, endSec: t + MIN_LEN }
+  draft.value = { index: 'trim', range: { startSec: t, endSec: t + MIN_LEN } }
 }
 
 function onMove(e: PointerEvent) {
-  if (!mode) return
-  const cur = focused.value
-  if (!cur) return
+  if (!mode || !draft.value) return
   const t = timeAt(e)
+  const cur = draft.value.range
+  const index = draft.value.index
 
   if (mode === 'new') {
-    trim.value = {
-      startSec: Math.min(anchor, t),
-      endSec: Math.max(anchor + MIN_LEN, Math.max(anchor, t)),
+    draft.value = {
+      index,
+      range: {
+        startSec: Math.min(anchor, t),
+        endSec: Math.max(anchor + MIN_LEN, Math.max(anchor, t)),
+      },
     }
-  } else if (mode === 'start') {
-    writeFocused({ ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) })
+    return
+  }
+
+  const prev = typeof index === 'number' ? (bank.value[index - 1] ?? null) : null
+  const next = typeof index === 'number' ? (bank.value[index + 1] ?? null) : null
+  const saved = typeof index === 'number' ? bank.value[index] : null
+
+  if (mode === 'start') {
+    // Joined chops move together, so closing one gap doesn't open another.
+    const joined = saved && prev && Math.abs(prev.endSec - saved.startSec) < LINK_TOL
+    let at = Math.max(0, Math.min(t, cur.endSec - MIN_LEN))
+    if (joined && prev) at = Math.max(at, prev.startSec + MIN_LEN)
+    draft.value = { index, range: { ...cur, startSec: at } }
+    draftNeighbour.value =
+      joined && prev ? { index: (index as number) - 1, range: { ...prev, endSec: at } } : null
   } else {
-    writeFocused({ ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) })
+    const joined = saved && next && Math.abs(next.startSec - saved.endSec) < LINK_TOL
+    let at = Math.min(total.value, Math.max(t, cur.startSec + MIN_LEN))
+    if (joined && next) at = Math.min(at, next.endSec - MIN_LEN)
+    draft.value = { index, range: { ...cur, endSec: at } }
+    draftNeighbour.value =
+      joined && next ? { index: (index as number) + 1, range: { ...next, startSec: at } } : null
   }
 }
 
 function onUp(e: PointerEvent) {
-  if (!mode) return
-  mode = null
-  dragView.value = null
   try {
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
   } catch {
     // capture already gone
   }
-  commitTrim()
-  playFocused()
+
+  // One write for the whole gesture, then the strip redraws from the store.
+  const edit = draft.value
+  const neighbour = draftNeighbour.value
+  if (edit) {
+    if (edit.index === 'trim') {
+      trim.value = edit.range
+      commitTrim()
+    } else {
+      const pad = bank.value[edit.index]
+      if (pad) library.setPad(key.value, edit.index, { ...pad, ...edit.range })
+      if (neighbour) {
+        const other = bank.value[neighbour.index]
+        if (other) library.setPad(key.value, neighbour.index, { ...other, ...neighbour.range })
+      }
+      if (record.value) library.remember(record.value)
+    }
+  }
+
+  draft.value = null
+  draftNeighbour.value = null
+  dragView.value = null
+  if (mode) {
+    mode = null
+    playFocused()
+  }
 }
 
 /* ---- controls, pointed at whatever is focused ---- */
@@ -723,7 +818,7 @@ const focusLabel = computed(() =>
           </button>
 
           <!-- Chops already assigned, drawn under the trim. -->
-          <template v-for="(p, i) in bank" :key="i">
+          <template v-for="(p, i) in chops" :key="i">
             <div
               v-if="p && inView(p.startSec, p.endSec)"
               class="absolute inset-y-0 pointer-events-none border-l"
@@ -741,7 +836,7 @@ const focusLabel = computed(() =>
           </template>
 
           <!-- The trim: the range chopping works inside. -->
-          <template v-if="trim">
+          <template v-if="trimShown">
             <div
               class="absolute inset-y-0 border-x-2 pointer-events-none transition-colors"
               :class="[
@@ -751,8 +846,8 @@ const focusLabel = computed(() =>
                   : 'bg-cream/10',
               ]"
               :style="{
-                left: `${pct(trim.startSec)}%`,
-                width: `${pct(trim.endSec) - pct(trim.startSec)}%`,
+                left: `${pct(trimShown.startSec)}%`,
+                width: `${pct(trimShown.endSec) - pct(trimShown.startSec)}%`,
               }"
             />
           </template>
@@ -787,12 +882,18 @@ const focusLabel = computed(() =>
           class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
         >
           <span>{{ focused ? formatTime(focused.startSec) : '—' }}</span>
-          <span :class="focus === 'trim' ? 'text-cream' : 'text-flag'">
+          <button
+            class="px-2 h-6 rounded"
+            :class="focus === 'trim' ? 'text-cream' : 'text-flag active:bg-ink-700'"
+            :disabled="focus === 'trim'"
+            @click="focusTrim"
+          >
             <template v-if="focused">
               {{ focusLabel }} · {{ focusedLength.toFixed(2) }}s
+              <span v-if="focus !== 'trim'" class="text-ink-500 text-[10px]">· to trim</span>
             </template>
             <template v-else>Drag the waveform, or tap a flag</template>
-          </span>
+          </button>
           <span>{{ focused ? formatTime(focused.endSec) : '—' }}</span>
         </div>
 
