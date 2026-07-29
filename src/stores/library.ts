@@ -7,6 +7,7 @@ import {
   newId,
   padKey,
   PAD_COUNT,
+  PAD_SETS,
   type Persisted,
   type Pad,
   type TrimState,
@@ -32,7 +33,7 @@ export const useLibrary = defineStore('library', () => {
   const markers = ref<Marker[]>(initial.markers)
   const starred = ref<{ [id: string]: number }>(initial.starred)
   const unplayable = ref<string[]>(initial.unplayable)
-  const pads = ref<{ [trackKey: string]: (Pad | null)[] }>(initial.pads)
+  const pads = ref<{ [trackKey: string]: (Pad | null)[][] }>(initial.pads)
   const trims = ref<{ [trackKey: string]: TrimState }>(initial.trims)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
@@ -57,15 +58,26 @@ export const useLibrary = defineStore('library', () => {
     { deep: true },
   )
 
-  function padsFor(key: string): (Pad | null)[] {
-    return pads.value[key] ?? new Array(PAD_COUNT).fill(null)
+  function padsFor(key: string, set = 0): (Pad | null)[] {
+    return pads.value[key]?.[set] ?? new Array(PAD_COUNT).fill(null)
   }
 
-  function setPad(key: string, index: number, pad: Pad | null) {
-    const bank = [...padsFor(key)]
-    bank[index] = pad
-    if (bank.every(p => p === null)) delete pads.value[key]
-    else pads.value[key] = bank
+  function setPad(key: string, set: number, index: number, pad: Pad | null) {
+    const sets: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
+    while (sets.length <= set) sets.push(new Array(PAD_COUNT).fill(null))
+    sets[set]![index] = pad
+    // Drop the whole track once every set is empty, so gc can reclaim it.
+    if (sets.every(b => b.every(p => p === null))) delete pads.value[key]
+    else pads.value[key] = sets
+  }
+
+  /** How many pads each set of a track holds, for the set switcher. */
+  function setCounts(key: string): number[] {
+    const sets = pads.value[key] ?? []
+    return Array.from(
+      { length: PAD_SETS },
+      (_, i) => sets[i]?.filter(Boolean).length ?? 0,
+    )
   }
 
   function trimFor(key: string): TrimState | null {
@@ -193,7 +205,7 @@ export const useLibrary = defineStore('library', () => {
       const at = k.indexOf('::')
       const recordId = k.slice(0, at)
       const record = records.value[recordId]
-      const count = bank.filter(Boolean).length
+      const count = bank.reduce((n, set) => n + set.filter(Boolean).length, 0)
       if (!record || count === 0) continue
       out.push({ key: k, recordId, trackName: k.slice(at + 2), count, record })
     }
@@ -212,6 +224,7 @@ export const useLibrary = defineStore('library', () => {
     isUnplayable,
     padsFor,
     setPad,
+    setCounts,
     trimFor,
     setTrim,
     padKey,

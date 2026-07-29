@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { provider } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
-import { PAD_COUNT, padKey, type Pad } from '../stores/storage'
+import { PAD_COUNT, PAD_SETS, padKey, type Pad } from '../stores/storage'
 import { useSampler, semitonesToRate } from '../composables/useSampler'
 import { makeZip, type ZipEntry } from '../lib/zip'
 import { encodeWav } from '../lib/wav'
@@ -52,7 +52,13 @@ const activePad = computed<number | null>(() =>
 
 const trackName = computed(() => decodeURIComponent(props.track))
 const key = computed(() => padKey(props.id, trackName.value))
-const bank = computed(() => library.padsFor(key.value))
+/** Which bank of sixteen is on screen. Swipe the grid to change it. */
+const padSet = ref(0)
+const bank = computed(() => library.padsFor(key.value, padSet.value))
+const setCounts = computed(() => library.setCounts(key.value))
+
+/** Everything below the trim controls, folded away by default. */
+const showMore = ref(false)
 const total = computed(() => sampler.buffer.value?.duration ?? 0)
 const currentPad = computed<Pad | null>(() =>
   activePad.value === null ? null : (bank.value[activePad.value] ?? null),
@@ -74,7 +80,7 @@ function writeFocused(range: Range) {
     return
   }
   const pad = bank.value[focus.value]
-  if (pad) library.setPad(key.value, focus.value, { ...pad, ...range })
+  if (pad) library.setPad(key.value, padSet.value, focus.value, { ...pad, ...range })
 }
 
 const trackMeta = computed(
@@ -335,10 +341,15 @@ function onUp(e: PointerEvent) {
       commitTrim()
     } else {
       const pad = bank.value[edit.index]
-      if (pad) library.setPad(key.value, edit.index, { ...pad, ...edit.range })
+      if (pad) library.setPad(key.value, padSet.value, edit.index, { ...pad, ...edit.range })
       if (neighbour) {
         const other = bank.value[neighbour.index]
-        if (other) library.setPad(key.value, neighbour.index, { ...other, ...neighbour.range })
+        if (other) {
+          library.setPad(key.value, padSet.value, neighbour.index, {
+            ...other,
+            ...neighbour.range,
+          })
+        }
       }
       if (record.value) library.remember(record.value)
     }
@@ -390,7 +401,7 @@ function roll() {
 function setPitch(semitones: number) {
   const cur = currentPad.value
   if (activePad.value === null || !cur) return
-  library.setPad(key.value, activePad.value, {
+  library.setPad(key.value, padSet.value, activePad.value, {
     ...cur,
     pitch: Math.max(-12, Math.min(12, semitones)),
   })
@@ -435,29 +446,106 @@ function useFlag(atSec: number) {
 
 /* ---- pads ---- */
 
-function hitPad(i: number) {
-  // Mid-chop, any pad is the cut button.
+/**
+ * Assignment is armed on the way down and only committed on the way up, so
+ * a swipe across the grid or a thumb resting too long doesn't silently
+ * overwrite an empty pad. Playing a filled pad stays immediate — it's a
+ * drum pad, latency there would be worse than the risk.
+ */
+const ARM_HOLD_MS = 450
+const ARM_MOVE_PX = 12
+
+let armedPad: number | null = null
+let armedAt = { x: 0, y: 0 }
+let armTimer: ReturnType<typeof setTimeout> | null = null
+
+function cancelArm() {
+  armedPad = null
+  if (armTimer !== null) {
+    clearTimeout(armTimer)
+    armTimer = null
+  }
+}
+
+function padDown(i: number, e: PointerEvent) {
+  // Mid-chop, any pad is the cut button and must fire instantly.
   if (lazy.value) {
     lazyCut()
     return
   }
 
-  const existing = bank.value[i]
   focus.value = i
+  const existing = bank.value[i]
 
   if (existing) {
     sampler.play(existing, i)
-  } else if (trim.value) {
-    // A copy of the range, not the range itself.
-    const pad: Pad = { ...trim.value, pitch: 0 }
-    library.setPad(key.value, i, pad)
-    if (record.value) library.remember(record.value)
-    sampler.play(pad, i)
+    return
   }
+
+  if (!trim.value) return
+  armedPad = i
+  armedAt = { x: e.clientX, y: e.clientY }
+  armTimer = setTimeout(cancelArm, ARM_HOLD_MS)
+}
+
+function padMove(e: PointerEvent) {
+  if (armedPad === null) return
+  const dx = Math.abs(e.clientX - armedAt.x)
+  const dy = Math.abs(e.clientY - armedAt.y)
+  if (dx > ARM_MOVE_PX || dy > ARM_MOVE_PX) cancelArm()
+}
+
+function padUp(i: number) {
+  if (armedPad !== i) {
+    cancelArm()
+    return
+  }
+  cancelArm()
+  if (!trim.value) return
+  // A copy of the range, not the range itself.
+  const pad: Pad = { ...trim.value, pitch: 0 }
+  library.setPad(key.value, padSet.value, i, pad)
+  if (record.value) library.remember(record.value)
+  sampler.play(pad, i)
+}
+
+/* ---- set switching ---- */
+
+let swipeFrom: { x: number; y: number } | null = null
+const SWIPE_PX = 55
+
+function gridDown(e: PointerEvent) {
+  swipeFrom = { x: e.clientX, y: e.clientY }
+}
+
+function swipeFromReset() {
+  swipeFrom = null
+  cancelArm()
+}
+
+function gridUp(e: PointerEvent) {
+  const from = swipeFrom
+  swipeFrom = null
+  if (!from || lazy.value) return
+  const dx = e.clientX - from.x
+  const dy = e.clientY - from.y
+  // Horizontal and decisive, or it was a tap on a pad.
+  if (Math.abs(dx) < SWIPE_PX || Math.abs(dx) < Math.abs(dy) * 1.5) return
+  cancelArm()
+  goToSet(padSet.value + (dx < 0 ? 1 : -1))
+}
+
+function goToSet(next: number) {
+  const clamped = Math.max(0, Math.min(PAD_SETS - 1, next))
+  if (clamped === padSet.value) return
+  padSet.value = clamped
+  // The old focus pointed into a bank that's no longer on screen.
+  focus.value = 'trim'
+  sampler.stop()
 }
 
 function clearPad(i: number) {
-  library.setPad(key.value, i, null)
+  library.setPad(key.value, padSet.value, i, null)
   if (focus.value === i) focus.value = 'trim'
 }
 
@@ -490,7 +578,9 @@ function startLazyChop() {
   lazyRange.value = { start: cur.startSec, end: cur.endSec }
   lazyBounds.value = [cur.startSec]
   lazyNextPad.value = 0
-  for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
+  // Deliberately not cleared: chopping overwrites only the pads it actually
+  // fills. Wiping sixteen pads for a three-cut performance was too blunt —
+  // swipe to an empty set first if a clean bank is what's wanted.
 
   lazy.value = true
   zoomed.value = true
@@ -504,7 +594,11 @@ function lazyCut() {
   if (t - last < MIN_CHOP) return
   if (lazyNextPad.value >= PAD_COUNT) return
 
-  library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: t, pitch: 0 })
+  library.setPad(key.value, padSet.value, lazyNextPad.value, {
+    startSec: last,
+    endSec: t,
+    pitch: 0,
+  })
   if (record.value) library.remember(record.value)
   lazyNextPad.value++
   lazyBounds.value.push(t)
@@ -520,7 +614,11 @@ function endLazyChop() {
   const end = lazyRange.value.end
   // The final chop always runs to the end of the trim.
   if (lazyNextPad.value < PAD_COUNT && end - last >= MIN_CHOP) {
-    library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: end, pitch: 0 })
+    library.setPad(key.value, padSet.value, lazyNextPad.value, {
+      startSec: last,
+      endSec: end,
+      pitch: 0,
+    })
     if (record.value) library.remember(record.value)
     lazyNextPad.value++
   }
@@ -936,7 +1034,7 @@ const focusLabel = computed(() =>
         </div>
 
         <!-- Pitch is the selected pad's, not the trim's. -->
-        <div v-if="!lazy" class="flex items-center gap-2 mt-2">
+        <div v-if="showMore && !lazy" class="flex items-center gap-2 mt-2">
           <span class="text-[10px] text-ink-500 w-9">PITCH</span>
           <input
             type="range"
@@ -958,9 +1056,20 @@ const focusLabel = computed(() =>
         </div>
       </div>
 
+      <div v-if="!lazy" class="flex-none flex justify-center pt-2">
+        <button
+          class="px-4 h-7 rounded-full border border-ink-600 text-[10px] tracking-widest
+                 text-flag-dim active:bg-ink-700"
+          :aria-expanded="showMore"
+          @click="showMore = !showMore"
+        >
+          {{ showMore ? '▴ LESS' : '▾ MORE' }}
+        </button>
+      </div>
+
       <div class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto">
         <!-- Flags for this track. Tapping one sets the range, nothing else. -->
-        <div v-if="!lazy && trackFlags.length" class="mb-3 rounded-lg border border-ink-600">
+        <div v-if="showMore && !lazy && trackFlags.length" class="mb-3 rounded-lg border border-ink-600">
           <button
             class="w-full flex items-center justify-between px-3 py-2 text-left"
             @click="flagsOpen = !flagsOpen"
@@ -1011,7 +1120,46 @@ const focusLabel = computed(() =>
           </div>
         </div>
 
-        <div class="grid grid-cols-4 gap-2">
+        <!-- Sets. Swiping the grid moves between them; the dots say which
+             hold anything so an empty bank is easy to find. -->
+        <div class="flex items-center justify-center gap-2 mb-2">
+          <button
+            class="w-8 h-8 flex items-center justify-center text-flag-soft disabled:opacity-30"
+            :disabled="padSet === 0"
+            aria-label="Previous set"
+            @click="goToSet(padSet - 1)"
+          >
+            ‹
+          </button>
+          <button
+            v-for="(n, i) in setCounts"
+            :key="i"
+            class="px-2 h-7 rounded text-[11px] tabular-nums border transition-colors"
+            :class="i === padSet
+              ? 'bg-flag text-ink-900 border-flag font-medium'
+              : n > 0
+                ? 'border-ink-500 text-flag-soft'
+                : 'border-ink-600 text-ink-500'"
+            @click="goToSet(i)"
+          >
+            {{ String.fromCharCode(65 + i) }}<span v-if="n" class="opacity-70">·{{ n }}</span>
+          </button>
+          <button
+            class="w-8 h-8 flex items-center justify-center text-flag-soft disabled:opacity-30"
+            :disabled="padSet === PAD_SETS - 1"
+            aria-label="Next set"
+            @click="goToSet(padSet + 1)"
+          >
+            ›
+          </button>
+        </div>
+
+        <div
+          class="grid grid-cols-4 gap-2 touch-pan-y"
+          @pointerdown="gridDown"
+          @pointerup="gridUp"
+          @pointercancel="swipeFromReset"
+        >
           <button
             v-for="i in PAD_COUNT"
             :key="i - 1"
@@ -1024,7 +1172,10 @@ const focusLabel = computed(() =>
               activePad === i - 1 ? 'ring-2 ring-flag' : '',
               sampler.playing.value === i - 1 ? '!bg-flag !text-ink-900' : '',
             ]"
-            @pointerdown="hitPad(i - 1)"
+            @pointerdown="padDown(i - 1, $event)"
+            @pointermove="padMove"
+            @pointerup="padUp(i - 1)"
+            @pointercancel="cancelArm"
           >
             <span class="absolute top-1 left-1.5 text-[9px] opacity-60">{{ i }}</span>
             <span v-if="bank[i - 1]" class="leading-tight text-center">
@@ -1065,7 +1216,7 @@ const focusLabel = computed(() =>
           </button>
         </div>
 
-        <template v-if="exportable && !lazy">
+        <template v-if="showMore && exportable && !lazy">
           <button
             v-if="!archive"
             class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
@@ -1108,8 +1259,9 @@ const focusLabel = computed(() =>
           {{ exportNote }}
         </p>
 
-        <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
+        <p v-if="showMore" class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
           Tap a pad to point the controls at that chop; tap the trim to go back.
+          Swipe the pads for another set.
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
