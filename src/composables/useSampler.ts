@@ -33,6 +33,32 @@ export function semitonesToRate(semitones: number): number {
   return Math.pow(2, semitones / 12)
 }
 
+/**
+ * Downloaded bytes, kept for the session so a track is only pulled once.
+ *
+ * Compressed bytes, not decoded audio: a 10-minute MP3 is ~10 MB here versus
+ * ~150 MB decoded, so several tracks fit in the space one buffer would take.
+ * Re-decoding on return costs a second or two and no data.
+ */
+const byteCache = new Map<string, ArrayBuffer>()
+const BYTE_CACHE_MAX = 100 * 1024 * 1024
+
+function cacheBytes(url: string, bytes: ArrayBuffer) {
+  byteCache.set(url, bytes)
+  let held = 0
+  for (const b of byteCache.values()) held += b.byteLength
+  // Oldest out first — Map iterates in insertion order.
+  for (const k of byteCache.keys()) {
+    if (held <= BYTE_CACHE_MAX) break
+    held -= byteCache.get(k)!.byteLength
+    byteCache.delete(k)
+  }
+}
+
+export function isDownloaded(url: string): boolean {
+  return byteCache.has(url)
+}
+
 let ctx: AudioContext | null = null
 function audioCtx(): AudioContext {
   if (!ctx) ctx = new AudioContext()
@@ -66,7 +92,11 @@ export function useSampler() {
     playing.value = null
   }
 
-  /** Frees the decoded audio — it's the largest thing the app ever holds. */
+  /**
+   * Frees the decoded audio — it's the largest thing the app ever holds, so
+   * it doesn't survive leaving the view. The downloaded bytes do, which is
+   * what makes coming back cheap.
+   */
   function release() {
     stop()
     buffer.value = null
@@ -90,11 +120,18 @@ export function useSampler() {
     progress.value = 0
 
     try {
+      const cached = byteCache.get(url)
+      let bytes: ArrayBuffer
+
+      if (cached) {
+        // Already pulled this session — straight to decoding.
+        bytes = cached
+        progress.value = null
+      } else {
       const res = await fetch(url)
       if (!res.ok) throw new Error(String(res.status))
 
       const total = Number(res.headers.get('content-length')) || 0
-      let bytes: ArrayBuffer
 
       if (res.body && total > 0) {
         const reader = res.body.getReader()
@@ -116,6 +153,8 @@ export function useSampler() {
         bytes = merged.buffer
       } else {
         bytes = await res.arrayBuffer()
+      }
+      cacheBytes(url, bytes)
       }
 
       progress.value = null
