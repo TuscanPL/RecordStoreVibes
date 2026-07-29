@@ -498,7 +498,11 @@ const trimLength = computed(() =>
           <!-- The trim: the range chopping works inside. -->
           <template v-if="trim">
             <div
-              class="absolute inset-y-0 bg-cream/10 border-x-2 border-cream pointer-events-none"
+              class="absolute inset-y-0 border-x-2 border-cream pointer-events-none
+                     transition-colors"
+              :class="sampler.active.value && sampler.playing.value === null
+                ? 'bg-cream/30'
+                : 'bg-cream/10'"
               :style="{
                 left: `${pct(trim.startSec)}%`,
                 width: `${pct(trim.endSec) - pct(trim.startSec)}%`,
@@ -507,7 +511,7 @@ const trimLength = computed(() =>
           </template>
 
           <div
-            v-if="sampler.playing.value !== null || lazy"
+            v-if="sampler.active.value || lazy"
             class="absolute inset-y-0 w-0.5 bg-flag pointer-events-none"
             :style="{ left: `${pct(sampler.playhead.value)}%` }"
           />

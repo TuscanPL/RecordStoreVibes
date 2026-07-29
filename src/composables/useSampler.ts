@@ -72,7 +72,17 @@ const loading = ref(false)
 const progress = ref<number | null>(null)
 const error = ref<string | null>(null)
 const rate = ref(0)
+/** Which pad is lit. Null for trim playback, which belongs to no pad. */
 const playing = ref<number | null>(null)
+
+/**
+ * Whether any voice is running at all.
+ *
+ * Separate from `playing` because that carries a pad index, and the trim
+ * isn't a pad — keying the playhead off `playing` meant Play and Roll made
+ * sound while nothing on screen moved.
+ */
+const active = ref(false)
 
 /**
  * Where the current voice is, in buffer seconds. AudioBufferSourceNode
@@ -112,6 +122,7 @@ export function useSampler() {
       voice = null
     }
     playing.value = null
+    active.value = false
   }
 
   /**
@@ -231,6 +242,7 @@ export function useSampler() {
       if (voice === src) {
         voice = null
         playing.value = null
+        active.value = false
         if (raf !== null) {
           cancelAnimationFrame(raf)
           raf = null
@@ -243,6 +255,7 @@ export function useSampler() {
     src.start(0, start, span)
     voice = src
     playing.value = index
+    active.value = true
 
     voiceStartedAt = c.currentTime
     voiceOffset = start
@@ -259,6 +272,7 @@ export function useSampler() {
     error,
     rate,
     playing,
+    active,
     playhead,
     load,
     play,
