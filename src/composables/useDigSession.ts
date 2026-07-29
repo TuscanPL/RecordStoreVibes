@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import type { Record as CrateRecord } from '../providers/types'
 
 /**
  * What's been dug up this session.
@@ -18,6 +19,23 @@ const drained = new Set<string>()
 /** Bumped so the UI can react to the counter changing. */
 const seenCount = ref(0)
 
+/** A crate as it was last shown, so coming back doesn't cost a fetch. */
+export interface CachedView {
+  key: string
+  /** Crate id, or null when the view came from a search. */
+  tag: string | null
+  query: string
+  label: string
+  records: CrateRecord[]
+  totalFound: number
+  drained: boolean
+  scrollTop: number
+}
+
+const views = new Map<string, CachedView>()
+/** The view to restore when Browse mounts. */
+let lastKey: string | null = null
+
 export function useDigSession() {
   function takePage(query: string): number {
     return nextPage.get(query) ?? 1
@@ -27,6 +45,7 @@ export function useDigSession() {
     nextPage.set(query, lastPageUsed + 1)
   }
 
+  /** Always called, even on an unfiltered load — remembering is not excluding. */
   function remember(ids: string[]) {
     for (const id of ids) seen.add(id)
     seenCount.value = seen.size
@@ -40,6 +59,29 @@ export function useDigSession() {
     return drained.has(query)
   }
 
+  function cacheView(view: CachedView) {
+    views.set(view.key, view)
+    lastKey = view.key
+  }
+
+  function getView(key: string): CachedView | undefined {
+    return views.get(key)
+  }
+
+  /** Restoring a cached crate makes it the one to come back to. */
+  function setLast(key: string) {
+    if (views.has(key)) lastKey = key
+  }
+
+  function lastView(): CachedView | undefined {
+    return lastKey ? views.get(lastKey) : undefined
+  }
+
+  function rememberScroll(key: string, scrollTop: number) {
+    const v = views.get(key)
+    if (v) v.scrollTop = scrollTop
+  }
+
   return {
     seen: seen as ReadonlySet<string>,
     seenCount,
@@ -48,5 +90,10 @@ export function useDigSession() {
     remember,
     markDrained,
     isDrained,
+    cacheView,
+    getView,
+    setLast,
+    lastView,
+    rememberScroll,
   }
 }
