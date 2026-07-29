@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { provider, COLLECTIONS } from '../providers'
+import { ref, computed, onMounted } from 'vue'
+import { provider, CRATES } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
+import { useLibrary } from '../stores/library'
 import RecordRow from '../components/RecordRow.vue'
 
 /** Hard cap. There is no "load more" and there will not be one. */
 const LIMIT = 40
 
+const library = useLibrary()
 const records = ref<CrateRecord[]>([])
 const totalFound = ref(0)
 const label = ref('')
-const activeCollection = ref<string | null>(null)
+const activeCrate = ref<string | null>(null)
 const query = ref('')
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -19,11 +21,14 @@ let debounce: ReturnType<typeof setTimeout> | null = null
 /** Guards against a slow early request overwriting a newer one. */
 let requestSeq = 0
 
+/** Anything already proven unplayable stays out of sight. */
+const visible = computed(() => records.value.filter(r => !library.isUnplayable(r.id)))
+
 async function run(fn: () => Promise<any>, tag: string | null) {
   const seq = ++requestSeq
   loading.value = true
   error.value = null
-  activeCollection.value = tag
+  activeCrate.value = tag
   try {
     const listing = await fn()
     if (seq !== requestSeq) return
@@ -43,9 +48,9 @@ async function run(fn: () => Promise<any>, tag: string | null) {
   }
 }
 
-function openCollection(id: string) {
+function openCrate(crate: { id: string; query: string }) {
   query.value = ''
-  run(() => provider.browseCollection(id, LIMIT), id)
+  run(() => provider.browseQuery(crate.query, LIMIT), crate.id)
 }
 
 function runSearch() {
@@ -62,7 +67,7 @@ function onType() {
   debounce = setTimeout(runSearch, 450)
 }
 
-onMounted(() => openCollection(COLLECTIONS[0].id))
+onMounted(() => openCrate(CRATES[0]!))
 </script>
 
 <template>
@@ -71,7 +76,7 @@ onMounted(() => openCollection(COLLECTIONS[0].id))
       <h1 class="font-display text-2xl text-cream">Crate</h1>
       <p class="text-[11px] text-flag-dim tabular-nums">
         <span v-if="loading">searching…</span>
-        <span v-else-if="records.length">{{ records.length }} records</span>
+        <span v-else-if="visible.length">{{ visible.length }} records</span>
       </p>
     </header>
 
@@ -79,21 +84,21 @@ onMounted(() => openCollection(COLLECTIONS[0].id))
     <div class="flex-1 min-h-0 scroll-y">
       <p v-if="error" class="px-4 py-6 text-[14px] text-red-300/80">{{ error }}</p>
 
-      <div v-else-if="loading && !records.length" class="px-4 py-10 text-center">
+      <div v-else-if="loading && !visible.length" class="px-4 py-10 text-center">
         <p class="text-[13px] text-flag-dim">Digging…</p>
       </div>
 
       <p
-        v-else-if="!records.length"
+        v-else-if="!visible.length"
         class="px-6 py-10 text-center text-[14px] text-flag-dim leading-relaxed"
       >
         Nothing here. Try another crate or a different search.
       </p>
 
       <template v-else>
-        <RecordRow v-for="r in records" :key="r.id" :record="r" />
+        <RecordRow v-for="r in visible" :key="r.id" :record="r" />
         <p class="px-4 py-6 text-center text-[12px] text-ink-500">
-          That's the crate — {{ records.length }} of
+          That's the crate — {{ visible.length }} of
           {{ totalFound.toLocaleString() }} matches.
           <br />
           <span class="text-[11px]">Search or switch crates for different ones.</span>
@@ -105,15 +110,15 @@ onMounted(() => openCollection(COLLECTIONS[0].id))
     <div class="flex-none border-t border-ink-700 bg-ink-800">
       <div class="flex gap-2 px-3 py-2.5 overflow-x-auto no-bar">
         <button
-          v-for="c in COLLECTIONS"
+          v-for="c in CRATES"
           :key="c.id"
           class="flex-none px-3.5 h-9 rounded-full text-[13px] border transition-colors"
           :class="
-            activeCollection === c.id
+            activeCrate === c.id
               ? 'bg-flag text-ink-900 border-flag font-medium'
               : 'text-flag-soft border-ink-500 active:bg-ink-700'
           "
-          @click="openCollection(c.id)"
+          @click="openCrate(c)"
         >
           {{ c.label }}
         </button>

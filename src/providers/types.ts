@@ -16,6 +16,7 @@ export interface Record {
   collection: string
   year: string | null
   artworkUrl: string | null
+  /** Empty until `getRecord` hydrates it — listings don't fetch file lists. */
   tracks: Track[]
   /** archive.org details page — goes into the export manifest. */
   sourceUrl: string
@@ -43,40 +44,37 @@ export interface CrateListing {
 export interface MusicProvider {
   name: string
   search(query: string, limit: number): Promise<CrateListing>
-  browseCollection(collectionId: string, limit: number): Promise<CrateListing>
+  browseQuery(query: string, limit: number): Promise<CrateListing>
   getRecord(id: string): Promise<Record | null>
 }
 
-/** Curated entry points. Deliberately few — this is a menu, not a feed. */
-export const COLLECTIONS = [
-  {
-    id: 'georgeblood',
-    label: '78 RPM',
-    blurb: 'Great 78 Project — shellac digitisations',
-  },
-  {
-    id: 'audio_music',
-    label: 'Music',
-    blurb: 'General music uploads',
-  },
-  {
-    id: 'etree',
-    label: 'Live Sets',
-    blurb: 'Live Music Archive — soundboard recordings',
-  },
-  {
-    id: 'audio_religion',
-    label: 'Gospel',
-    blurb: 'Spirituals, hymns, sermons',
-  },
-  {
-    id: 'audio_bookspoetry',
-    label: 'Spoken',
-    blurb: 'Poetry, readings, speech',
-  },
-  {
-    id: 'oldtimeradio',
-    label: 'Radio',
-    blurb: 'Old time radio broadcasts',
-  },
-] as const
+export interface Crate {
+  id: string
+  label: string
+  blurb: string
+  /** Raw IA query. Playability and mediatype filters are added downstream. */
+  query: string
+}
+
+/**
+ * Entry points into the archive. Deliberately a fixed menu, not a feed.
+ *
+ * Mixed on purpose: `collection:` gives tight curation but depends on an
+ * exact identifier existing, while `subject:` is loose but nearly always
+ * returns something. If one crate ever comes up empty, the others still work.
+ */
+export const CRATES: Crate[] = [
+  { id: '78s', label: '78 RPM', blurb: 'Great 78 Project', query: 'collection:(georgeblood)' },
+  { id: 'jazz', label: 'Jazz', blurb: 'Early and trad', query: 'subject:(jazz)' },
+  { id: 'blues', label: 'Blues', blurb: 'Country and delta', query: 'subject:(blues)' },
+  { id: 'gospel', label: 'Gospel', blurb: 'Spirituals and hymns', query: 'subject:(gospel OR spiritual)' },
+  { id: 'soul', label: 'Soul / Funk', blurb: 'Breaks and grooves', query: 'subject:(soul OR funk OR "rhythm and blues")' },
+  { id: 'live', label: 'Live Sets', blurb: 'Live Music Archive', query: 'collection:(etree)' },
+  { id: 'netlabel', label: 'Netlabels', blurb: 'Creative Commons releases', query: 'collection:(netlabels)' },
+  { id: 'library', label: 'Library', blurb: 'Production and mood music', query: 'subject:("library music" OR "production music")' },
+  { id: 'field', label: 'Field Recs', blurb: 'Location recordings', query: 'subject:("field recording" OR "field recordings")' },
+  { id: 'world', label: 'World', blurb: 'Traditional and folk', query: 'subject:("folk music" OR traditional OR ethnographic)' },
+  { id: 'classical', label: 'Classical', blurb: 'Orchestral and chamber', query: 'subject:(classical OR orchestral OR symphony)' },
+  { id: 'radio', label: 'Radio', blurb: 'Old time radio', query: 'collection:(oldtimeradio)' },
+  { id: 'spoken', label: 'Spoken', blurb: 'Readings and poetry', query: 'subject:(poetry OR "spoken word")' },
+]

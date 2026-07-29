@@ -9,9 +9,20 @@ export interface Persisted {
   markers: Marker[]
   /** id -> starredAt epoch ms. */
   starred: { [id: string]: number }
+  /**
+   * Items that turned out to have no playable audio. Remembered so a dud
+   * never appears in a listing twice.
+   */
+  unplayable: string[]
 }
 
-const EMPTY: Persisted = { version: 1, records: {}, markers: [], starred: {} }
+const EMPTY: Persisted = {
+  version: 1,
+  records: {},
+  markers: [],
+  starred: {},
+  unplayable: [],
+}
 
 export function load(): Persisted {
   try {
@@ -24,6 +35,7 @@ export function load(): Persisted {
       records: parsed.records ?? {},
       markers: Array.isArray(parsed.markers) ? parsed.markers : [],
       starred: parsed.starred ?? {},
+      unplayable: Array.isArray(parsed.unplayable) ? parsed.unplayable : [],
     }
   } catch {
     // Corrupt or unavailable storage shouldn't take the app down.
