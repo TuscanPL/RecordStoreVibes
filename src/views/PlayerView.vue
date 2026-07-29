@@ -114,7 +114,18 @@ onMounted(async () => {
     loading.value = false
   }
 
-  if (record.value?.tracks.length) void openTrack(0)
+  if (!record.value?.tracks.length) return
+
+  // Coming back to something already playing must not restart it. Adopt the
+  // track that's actually loaded; only start from the top if this record
+  // isn't the one on the deck.
+  const playing = audio.currentTrack.value?.streamUrl
+  const resumeAt = playing
+    ? record.value.tracks.findIndex(t => t.streamUrl === playing)
+    : -1
+
+  if (resumeAt >= 0) trackIndex.value = resumeAt
+  else void openTrack(0)
 })
 
 async function openTrack(index: number) {
