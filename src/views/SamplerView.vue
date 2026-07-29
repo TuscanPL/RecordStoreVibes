@@ -391,6 +391,16 @@ function endLazyChop() {
 const exporting = ref(false)
 const exportNote = ref<string | null>(null)
 
+/**
+ * Whether pitched pads export as they sound, or as the raw region.
+ *
+ * Applied matches what was auditioned; dry keeps the untouched material for
+ * a sampler that will do its own pitching. Only offered when some pad is
+ * actually pitched — otherwise the choice means nothing.
+ */
+const applyPitch = ref(true)
+const hasPitchedPads = computed(() => bank.value.some(p => p && p.pitch !== 0))
+
 function safeName(text: string): string {
   return text.replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
 }
@@ -432,7 +442,12 @@ async function exportChops() {
       const name = `pad-${String(i + 1).padStart(2, '0')}.wav`
       entries.push({
         name,
-        data: encodeWav(buf, pad.startSec, pad.endSec, semitonesToRate(pad.pitch)),
+        data: encodeWav(
+          buf,
+          pad.startSec,
+          pad.endSec,
+          applyPitch.value ? semitonesToRate(pad.pitch) : 1,
+        ),
       })
       manifestPads.push({
         pad: i + 1,
@@ -440,7 +455,7 @@ async function exportChops() {
         startSec: Number(pad.startSec.toFixed(3)),
         endSec: Number(pad.endSec.toFixed(3)),
         pitchSemitones: pad.pitch,
-        pitchApplied: pad.pitch !== 0,
+        pitchApplied: applyPitch.value && pad.pitch !== 0,
       })
     })
 
@@ -463,6 +478,9 @@ async function exportChops() {
             ? `Cut from a ${(buf.sampleRate / 1000).toFixed(1)}kHz decode, which is how a track this long fits in memory. Re-cut from the download URL for full fidelity.`
             : 'Cut at the source rate.',
       },
+      pitch: applyPitch.value
+        ? 'Applied — pads are resampled to the pitch they were auditioned at.'
+        : 'Not applied — pads are the raw regions; pitchSemitones says what was set.',
       trim: trim.value
         ? {
             file: 'trim.wav',
@@ -478,7 +496,8 @@ async function exportChops() {
       data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
     })
 
-    const filename = `crate-${safeName(props.id)}-${safeName(trackName.value)}.zip`
+    const dry = hasPitchedPads.value && !applyPitch.value ? '-dry' : ''
+    const filename = `crate-${safeName(props.id)}-${safeName(trackName.value)}${dry}.zip`
     const blob = makeZip(entries)
 
     // The native share sheet is both requirements at once: Save to Files
@@ -830,9 +849,28 @@ const trimLength = computed(() =>
           </button>
         </div>
 
+        <!-- Only worth asking when something is actually pitched. -->
+        <div
+          v-if="exportable && !lazy && hasPitchedPads"
+          class="flex items-center gap-2 mt-3"
+        >
+          <span class="text-[10px] text-ink-500 flex-none">PITCH</span>
+          <button
+            v-for="opt in [true, false]"
+            :key="String(opt)"
+            class="flex-1 h-9 rounded text-[12px] border transition-colors"
+            :class="applyPitch === opt
+              ? 'bg-flag text-ink-900 border-flag font-medium'
+              : 'border-ink-500 text-flag-soft active:bg-ink-700'"
+            @click="applyPitch = opt"
+          >
+            {{ opt ? 'Applied' : 'Dry' }}
+          </button>
+        </div>
+
         <button
           v-if="exportable && !lazy"
-          class="w-full h-12 mt-3 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+          class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
                  active:scale-[0.99] transition-transform disabled:opacity-50"
           :disabled="exporting"
           @click="exportChops"
