@@ -92,7 +92,7 @@ function onDown(e: PointerEvent) {
   const t = timeAt(e)
 
   if (arming.value) {
-    lazyChopFrom(t)
+    lazyChop(t, DEFAULT_CHOP_SEC, 0)
     arming.value = false
     return
   }
@@ -175,14 +175,27 @@ function clearPad(i: number) {
   library.setPad(key.value, i, null)
 }
 
+/** Fallback slice length when there's no trim to take one from. */
+const DEFAULT_CHOP_SEC = 1
+
 /**
- * Lazy chop: fill every pad with back-to-back slices from a point you pick.
- * Slice length is whatever the current chop is, so the grid is yours to set.
+ * Lazy chop. A trim in hand is the template for the whole grid — chopping
+ * begins at its start, inherits its length and pitch, and pad 1 comes out
+ * as exactly what you trimmed. Only without one does it have to ask where.
+ *
+ * Fills the whole bank, so anything already assigned is replaced.
  */
-function lazyChopFrom(start: number) {
-  const len = current.value
-    ? Math.max(0.1, current.value.endSec - current.value.startSec)
-    : 1
+function startLazyChop() {
+  const cur = current.value
+  if (cur) {
+    lazyChop(cur.startSec, Math.max(0.1, cur.endSec - cur.startSec), cur.pitch)
+    arming.value = false
+  } else {
+    arming.value = !arming.value
+  }
+}
+
+function lazyChop(start: number, len: number, pitch: number) {
   for (let i = 0; i < PAD_COUNT; i++) {
     const s = start + i * len
     if (s >= total.value) {
@@ -192,7 +205,7 @@ function lazyChopFrom(start: number) {
     library.setPad(key.value, i, {
       startSec: s,
       endSec: Math.min(total.value, s + len),
-      pitch: 0,
+      pitch,
     })
   }
   activePad.value = 0
@@ -358,7 +371,8 @@ const lengthSec = computed(() =>
           <button
             class="px-2.5 h-9 rounded-lg border text-[10px] tracking-wide active:bg-ink-700"
             :class="arming ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
-            @click="arming = !arming"
+            :title="current ? 'Chop from the trim' : 'Pick a start point'"
+            @click="startLazyChop"
           >
             CHOP
           </button>
