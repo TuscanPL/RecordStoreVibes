@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useLibrary } from '../stores/library'
-import { useAudio, formatTime } from '../composables/useAudio'
+import { formatTime } from '../composables/useAudio'
 import { useExport } from '../composables/useExport'
 
 const library = useLibrary()
-const audio = useAudio()
 const { exportJson, exportCsv, trackUrl } = useExport()
 
 const expanded = ref<string | null>(null)
@@ -188,21 +187,6 @@ function fileCount(markers: { trackName: string }[]): number {
 
       <div class="h-4" />
     </div>
-
-    <!-- Now playing strip, so leaving the player doesn't lose your place. -->
-    <router-link
-      v-if="audio.currentRecord.value && audio.currentTrack.value"
-      :to="`/r/${audio.currentRecord.value.id}`"
-      class="flex-none flex items-center gap-3 px-4 py-2 bg-ink-700 border-t border-ink-600"
-    >
-      <span class="w-2 h-2 rounded-full flex-none" :class="audio.isPlaying.value ? 'bg-flag' : 'bg-ink-500'" />
-      <p class="flex-1 min-w-0 text-[12px] text-cream truncate">
-        {{ audio.currentTrack.value.title }}
-      </p>
-      <span class="text-[11px] text-flag-dim tabular-nums flex-none">
-        {{ formatTime(audio.position.value) }}
-      </span>
-    </router-link>
 
     <div
       v-if="hasAnything"

@@ -12,9 +12,15 @@ const props = defineProps<{
 const canvas = ref<HTMLCanvasElement | null>(null)
 let observer: ResizeObserver | null = null
 
-const PLAYED = '#d99a4e'
+/*
+ * Four things share this strip and all need to stay apart:
+ * unplayed → played → flag → playhead, dimmest to brightest.
+ * Amber is the flag colour everywhere else in the app, so it belongs to the
+ * markers here; the played region takes the muted tan a step below it.
+ */
 const UNPLAYED = '#4a3f33'
-const MARKER = '#f2ece0'
+const PLAYED = '#8a7454'
+const MARKER = '#d99a4e'
 
 function draw() {
   const el = canvas.value
@@ -60,10 +66,13 @@ function draw() {
     }
   }
 
+  // Flags: cream, full height, centred on the timestamp. Kept lighter than
+  // both the played amber and the unplayed brown so they read anywhere on
+  // the bar, and distinct from the amber playhead riding on top of them.
+  ctx.fillStyle = MARKER
   for (const m of props.markers) {
     const x = (m / 100) * w
-    ctx.fillStyle = MARKER
-    ctx.fillRect(Math.min(w - 1.5, Math.max(0, x - 0.75)), 0, 1.5, h)
+    ctx.fillRect(Math.min(w - 2, Math.max(0, x - 1)), 0, 2, h)
   }
 }
 

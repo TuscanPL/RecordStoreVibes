@@ -114,7 +114,18 @@ onMounted(async () => {
     loading.value = false
   }
 
-  if (record.value?.tracks.length) void openTrack(0)
+  if (!record.value?.tracks.length) return
+
+  // Coming back to something already playing must not restart it. Adopt the
+  // track that's actually loaded; only start from the top if this record
+  // isn't the one on the deck.
+  const playing = audio.currentTrack.value?.streamUrl
+  const resumeAt = playing
+    ? record.value.tracks.findIndex(t => t.streamUrl === playing)
+    : -1
+
+  if (resumeAt >= 0) trackIndex.value = resumeAt
+  else void openTrack(0)
 })
 
 async function openTrack(index: number) {
@@ -346,6 +357,7 @@ watch(trackIndex, () => {
             step="0.5"
             :value="displayPos"
             class="scrub absolute inset-x-0 w-full appearance-none bg-transparent"
+            :class="{ tall: wave.peaks.value }"
             :disabled="!isCurrent || total === 0"
             aria-label="Seek"
             @pointerdown="onScrubStart"
@@ -449,22 +461,62 @@ watch(trackIndex, () => {
 .scrub {
   height: 100%;
 }
+
+/*
+ * Playhead, not a knob. The thumb stays 24px wide for the touch target but
+ * paints only a 3px cream line down the middle, so you can see the exact
+ * spot a flag will land on.
+ *
+ * Cream because it has to outrank the amber marker lines it passes over —
+ * amber means "flagged" everywhere else in the app. The 1px dark edges keep
+ * it crisp against the waveform behind it.
+ */
 .scrub::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 9999px;
-  background: #f2ece0;
-  border: 2px solid #0e0c0a;
+  width: 24px;
+  height: 22px;
+  border: none;
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - 2.5px),
+    rgba(14, 12, 10, 0.85) calc(50% - 2.5px),
+    rgba(14, 12, 10, 0.85) calc(50% - 1.5px),
+    #f2ece0 calc(50% - 1.5px),
+    #f2ece0 calc(50% + 1.5px),
+    rgba(14, 12, 10, 0.85) calc(50% + 1.5px),
+    rgba(14, 12, 10, 0.85) calc(50% + 2.5px),
+    transparent calc(50% + 2.5px)
+  );
 }
 .scrub::-moz-range-thumb {
-  width: 20px;
-  height: 20px;
-  border-radius: 9999px;
-  background: #f2ece0;
-  border: 2px solid #0e0c0a;
+  width: 24px;
+  height: 22px;
+  border: none;
+  background: linear-gradient(
+    to right,
+    transparent calc(50% - 2.5px),
+    rgba(14, 12, 10, 0.85) calc(50% - 2.5px),
+    rgba(14, 12, 10, 0.85) calc(50% - 1.5px),
+    #f2ece0 calc(50% - 1.5px),
+    #f2ece0 calc(50% + 1.5px),
+    rgba(14, 12, 10, 0.85) calc(50% + 1.5px),
+    rgba(14, 12, 10, 0.85) calc(50% + 2.5px),
+    transparent calc(50% + 2.5px)
+  );
 }
+
+/* Full-height playhead once the waveform is showing. */
+.scrub.tall::-webkit-slider-thumb {
+  height: 52px;
+}
+.scrub.tall::-moz-range-thumb {
+  height: 52px;
+}
+
 .scrub:disabled::-webkit-slider-thumb {
-  background: #3d342b;
+  opacity: 0.35;
+}
+.scrub:disabled::-moz-range-thumb {
+  opacity: 0.35;
 }
 </style>

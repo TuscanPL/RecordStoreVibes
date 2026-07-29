@@ -2,17 +2,21 @@
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useLibrary } from './stores/library'
+import NowPlaying from './components/NowPlaying.vue'
 
 const route = useRoute()
 const library = useLibrary()
 
-// The player is a pushed detail view — it owns the whole screen.
+// The player is a pushed detail view — it owns the whole screen, and the
+// now-playing strip would just be a link back to where you already are.
 const showTabs = computed(() => route.name !== 'player')
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-ink-900">
     <router-view class="flex-1 min-h-0" />
+
+    <NowPlaying v-if="showTabs" />
 
     <nav
       v-if="showTabs"
