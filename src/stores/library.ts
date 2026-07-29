@@ -1,7 +1,16 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { Record as CrateRecord, Marker } from '../providers/types'
-import { load, save, newId, padKey, PAD_COUNT, type Persisted, type Pad } from './storage'
+import {
+  load,
+  save,
+  newId,
+  padKey,
+  PAD_COUNT,
+  type Persisted,
+  type Pad,
+  type TrimState,
+} from './storage'
 
 export interface ChoppedTrack {
   key: string
@@ -24,6 +33,7 @@ export const useLibrary = defineStore('library', () => {
   const starred = ref<{ [id: string]: number }>(initial.starred)
   const unplayable = ref<string[]>(initial.unplayable)
   const pads = ref<{ [trackKey: string]: (Pad | null)[] }>(initial.pads)
+  const trims = ref<{ [trackKey: string]: TrimState }>(initial.trims)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
 
@@ -35,11 +45,12 @@ export const useLibrary = defineStore('library', () => {
       starred: starred.value,
       unplayable: unplayable.value,
       pads: pads.value,
+      trims: trims.value,
     }
   }
 
   watch(
-    [records, markers, starred, unplayable, pads],
+    [records, markers, starred, unplayable, pads, trims],
     () => {
       persistFailed.value = !save(snapshot())
     },
@@ -55,6 +66,15 @@ export const useLibrary = defineStore('library', () => {
     bank[index] = pad
     if (bank.every(p => p === null)) delete pads.value[key]
     else pads.value[key] = bank
+  }
+
+  function trimFor(key: string): TrimState | null {
+    return trims.value[key] ?? null
+  }
+
+  function setTrim(key: string, trim: TrimState | null) {
+    if (trim) trims.value[key] = trim
+    else delete trims.value[key]
   }
 
   /** Remembered so a dud item never surfaces in a listing again. */
@@ -186,11 +206,14 @@ export const useLibrary = defineStore('library', () => {
     starred,
     unplayable,
     pads,
+    trims,
     persistFailed,
     markUnplayable,
     isUnplayable,
     padsFor,
     setPad,
+    trimFor,
+    setTrim,
     padKey,
     hasPads,
     chopped,

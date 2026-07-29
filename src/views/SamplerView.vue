@@ -94,6 +94,16 @@ onMounted(async () => {
       return
     }
     await sampler.load(t.streamUrl, t.durationSec ?? 0)
+
+    // Pick up exactly where this track was left. Clamped, because the
+    // decoded duration can differ slightly from the metadata's.
+    const saved = library.trimFor(key.value)
+    if (saved && total.value > 0) {
+      const start = Math.max(0, Math.min(saved.startSec, total.value - MIN_LEN))
+      const end = Math.max(start + MIN_LEN, Math.min(saved.endSec, total.value))
+      trim.value = { startSec: start, endSec: end }
+      zoomed.value = saved.zoomed
+    }
   } catch {
     loadError.value = "Couldn't open the sampler for this track."
   }
@@ -120,6 +130,17 @@ const dragView = ref<{ start: number; end: number } | null>(null)
 
 function activeView(): { start: number; end: number } {
   return dragView.value ?? view.value
+}
+
+/**
+ * Written at rest, never mid-drag: the store persists on every mutation, so
+ * committing on pointermove would mean a JSON write per frame.
+ */
+function commitTrim() {
+  library.setTrim(
+    key.value,
+    trim.value ? { ...trim.value, zoomed: zoomed.value } : null,
+  )
 }
 
 function timeAt(e: PointerEvent): number {
@@ -189,6 +210,7 @@ function onUp(e: PointerEvent) {
   } catch {
     // capture already gone
   }
+  commitTrim()
   playTrim()
 }
 
@@ -201,6 +223,7 @@ function nudge(edge: 'startSec' | 'endSec', delta: number) {
   next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
   if (next.endSec - next.startSec < MIN_LEN) return
   trim.value = next
+  commitTrim()
 }
 
 function playTrim() {
@@ -254,6 +277,7 @@ function useFlag(atSec: number) {
   const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
   trim.value = { startSec: start, endSec: Math.min(total.value, start + flagLength.value) }
   zoomed.value = true
+  commitTrim()
   playTrim()
 }
 
@@ -441,7 +465,7 @@ const trimLength = computed(() =>
             :class="zoomed
               ? 'border-flag bg-ink-900/80 text-flag'
               : 'border-ink-500 bg-ink-900/70 text-flag-soft'"
-            @pointerdown.stop="zoomed = !zoomed"
+            @pointerdown.stop="zoomed = !zoomed; commitTrim()"
           >
             {{ zoomed ? 'TRIM' : 'ALL' }}
           </button>
