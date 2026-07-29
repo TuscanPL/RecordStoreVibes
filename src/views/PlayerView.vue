@@ -47,7 +47,11 @@ onMounted(async () => {
   try {
     const fetched = await provider.getRecord(props.id)
     if (!fetched) {
-      error.value = 'No streamable audio on this item.'
+      // Nothing here can be played. Remember it so it stays out of listings,
+      // and get out rather than parking the user on a dead end.
+      library.markUnplayable(props.id)
+      error.value = 'Nothing playable on this one — putting it back.'
+      setTimeout(() => router.back(), 900)
       return
     }
     record.value = fetched

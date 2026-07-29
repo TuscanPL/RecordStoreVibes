@@ -14,6 +14,7 @@ export const useLibrary = defineStore('library', () => {
   const records = ref<{ [id: string]: CrateRecord }>(initial.records)
   const markers = ref<Marker[]>(initial.markers)
   const starred = ref<{ [id: string]: number }>(initial.starred)
+  const unplayable = ref<string[]>(initial.unplayable)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
 
@@ -23,16 +24,26 @@ export const useLibrary = defineStore('library', () => {
       records: records.value,
       markers: markers.value,
       starred: starred.value,
+      unplayable: unplayable.value,
     }
   }
 
   watch(
-    [records, markers, starred],
+    [records, markers, starred, unplayable],
     () => {
       persistFailed.value = !save(snapshot())
     },
     { deep: true },
   )
+
+  /** Remembered so a dud item never surfaces in a listing again. */
+  function markUnplayable(id: string) {
+    if (!unplayable.value.includes(id)) unplayable.value.push(id)
+  }
+
+  function isUnplayable(id: string): boolean {
+    return unplayable.value.includes(id)
+  }
 
   /** Keeps metadata around so the Flagged list works without a network call. */
   function remember(record: CrateRecord) {
@@ -130,7 +141,10 @@ export const useLibrary = defineStore('library', () => {
     records,
     markers,
     starred,
+    unplayable,
     persistFailed,
+    markUnplayable,
+    isUnplayable,
     remember,
     dropMarker,
     removeMarker,

@@ -107,21 +107,30 @@ function toRecord(doc: SearchDoc): Record {
   }
 }
 
-async function runSearch(query: string, limit: number): Promise<CrateListing> {
-  const params = new URLSearchParams({
-    q: query,
-    'fl[]': 'identifier',
-    rows: String(limit),
-    page: '1',
-    output: 'json',
-  })
-  // advancedsearch only returns the fields asked for, and repeats the key.
-  const url =
-    `${SEARCH_URL}?${params}` +
-    '&fl[]=title&fl[]=creator&fl[]=collection&fl[]=year&fl[]=date' +
-    '&sort[]=downloads+desc'
+/**
+ * Every listing query carries this.
+ *
+ * `format:(MP3)` is the important half: it makes the search index do the
+ * playability filtering, so an item with nothing but FLAC or WAV never
+ * reaches the browse list. Without it we'd only find out after the user
+ * tapped through and waited for a metadata fetch. IA derives an MP3 for
+ * essentially every audio upload, so this costs very little coverage.
+ */
+const LISTING_FILTER = 'mediatype:(audio) AND format:(MP3)'
 
-  const data = await getJson(url)
+async function runSearch(query: string, limit: number): Promise<CrateListing> {
+  // advancedsearch takes repeated fl[] keys for the fields it should return.
+  const params = new URLSearchParams()
+  params.set('q', query)
+  for (const field of ['identifier', 'title', 'creator', 'collection', 'year', 'date']) {
+    params.append('fl[]', field)
+  }
+  params.append('sort[]', 'downloads desc')
+  params.set('rows', String(limit))
+  params.set('page', '1')
+  params.set('output', 'json')
+
+  const data = await getJson(`${SEARCH_URL}?${params}`)
   const docs: SearchDoc[] = data?.response?.docs ?? []
   const totalFound: number = data?.response?.numFound ?? docs.length
 
@@ -142,16 +151,13 @@ export class InternetArchiveProvider implements MusicProvider {
     // Quote-safe: IA's parser chokes on stray colons and quotes from a
     // free-text field, so the user's words go in as a single phrase-ish term.
     const safe = trimmed.replace(/["\\:]/g, ' ')
-    const listing = await runSearch(`(${safe}) AND mediatype:(audio)`, limit)
+    const listing = await runSearch(`(${safe}) AND ${LISTING_FILTER}`, limit)
     return { ...listing, label: `“${trimmed}”` }
   }
 
-  async browseCollection(collectionId: string, limit: number): Promise<CrateListing> {
-    const listing = await runSearch(
-      `collection:(${collectionId}) AND mediatype:(audio)`,
-      limit,
-    )
-    return { ...listing, label: collectionId }
+  async browseQuery(query: string, limit: number): Promise<CrateListing> {
+    const listing = await runSearch(`(${query}) AND ${LISTING_FILTER}`, limit)
+    return { ...listing, label: query }
   }
 
   /** Hydrates the track list. Only called when a record is actually opened. */
