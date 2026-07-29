@@ -522,14 +522,6 @@ watch(trackIndex, () => {
 </template>
 
 <style scoped>
-/* Invisible native range on top of the drawn track — native touch dragging
-   without fighting the browser's own thumb rendering. */
-/* Fills whatever height the container is, so you can drag anywhere on the
-   waveform rather than only on a thin strip. */
-.scrub {
-  height: 100%;
-}
-
 /*
  * Dragging is handled with pointer events rather than a native range input.
  *
