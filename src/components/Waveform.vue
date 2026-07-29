@@ -21,6 +21,8 @@ let observer: ResizeObserver | null = null
 const UNPLAYED = '#4a3f33'
 const PLAYED = '#8a7454'
 const MARKER = '#d99a4e'
+const HEAD = '#f2ece0'
+const HEAD_EDGE = 'rgba(14, 12, 10, 0.85)'
 
 function draw() {
   const el = canvas.value
@@ -66,14 +68,26 @@ function draw() {
     }
   }
 
-  // Flags: cream, full height, centred on the timestamp. Kept lighter than
-  // both the played amber and the unplayed brown so they read anywhere on
-  // the bar, and distinct from the amber playhead riding on top of them.
+  // Flags: amber, full height, centred on the timestamp.
   ctx.fillStyle = MARKER
   for (const m of props.markers) {
     const x = (m / 100) * w
     ctx.fillRect(Math.min(w - 2, Math.max(0, x - 1)), 0, 2, h)
   }
+
+  // Playhead last, so it rides over the flags it passes.
+  //
+  // Drawn here rather than relying on the range input's thumb: the browser
+  // insets that thumb so it can't overflow the track, giving it a travel of
+  // (w - thumbWidth) against the bars' full w. That put the line up to half
+  // a thumb-width away from the audio it was pointing at — worst at the
+  // start and end of a track. Everything on this canvas shares one linear
+  // time -> x mapping instead.
+  const hx = Math.min(w - 1.5, Math.max(1.5, (props.progress / 100) * w))
+  ctx.fillStyle = HEAD_EDGE
+  ctx.fillRect(hx - 2.5, 0, 5, h)
+  ctx.fillStyle = HEAD
+  ctx.fillRect(hx - 1.5, 0, 3, h)
 }
 
 watch(() => [props.peaks, props.progress, props.markers], draw, { deep: true })

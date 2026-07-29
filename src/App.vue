@@ -1,22 +1,48 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useLibrary } from './stores/library'
+import { useAudio } from './composables/useAudio'
 import NowPlaying from './components/NowPlaying.vue'
 
 const route = useRoute()
 const library = useLibrary()
+const audio = useAudio()
 
 // The player is a pushed detail view — it owns the whole screen, and the
 // now-playing strip would just be a link back to where you already are.
 const showTabs = computed(() => route.name !== 'player')
+
+/**
+ * Whether the strip carries over out of the player.
+ *
+ * Decided at the moment you leave, not bound to isPlaying continuously —
+ * otherwise pausing from the strip would make it vanish under your thumb
+ * and leave you no way back to the track.
+ */
+const carry = ref(false)
+
+watch(
+  () => route.name,
+  (to, from) => {
+    if (from === 'player' && to !== 'player') carry.value = audio.isPlaying.value
+  },
+)
+
+// Starting playback anywhere — including the lock screen — brings it back.
+watch(
+  () => audio.isPlaying.value,
+  playing => {
+    if (playing) carry.value = true
+  },
+)
 </script>
 
 <template>
   <div class="h-full flex flex-col bg-ink-900">
     <router-view class="flex-1 min-h-0" />
 
-    <NowPlaying v-if="showTabs" />
+    <NowPlaying v-if="showTabs && carry" />
 
     <nav
       v-if="showTabs"

@@ -357,7 +357,6 @@ watch(trackIndex, () => {
             step="0.5"
             :value="displayPos"
             class="scrub absolute inset-x-0 w-full appearance-none bg-transparent"
-            :class="{ tall: wave.peaks.value }"
             :disabled="!isCurrent || total === 0"
             aria-label="Seek"
             @pointerdown="onScrubStart"
@@ -463,60 +462,29 @@ watch(trackIndex, () => {
 }
 
 /*
- * Playhead, not a knob. The thumb stays 24px wide for the touch target but
- * paints only a 3px cream line down the middle, so you can see the exact
- * spot a flag will land on.
+ * The thumb is invisible and 1px wide; the visible playhead is painted on
+ * the canvas underneath.
  *
- * Cream because it has to outrank the amber marker lines it passes over —
- * amber means "flagged" everywhere else in the app. The 1px dark edges keep
- * it crisp against the waveform behind it.
+ * Width matters more than looks here. A range input insets its thumb so it
+ * can't overflow the track, so the thumb's centre travels (width - thumbW)
+ * while the waveform spans the full width. At 24px that pushed the line up
+ * to 12px away from the audio it pointed at, worst at the start and end of
+ * a track. At 1px the inset is half a pixel.
+ *
+ * Interaction is unaffected: the whole input is the touch target, not the
+ * thumb, so tapping and dragging anywhere on the bar still works.
  */
 .scrub::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 24px;
-  height: 22px;
+  width: 1px;
+  height: 100%;
+  background: transparent;
   border: none;
-  background: linear-gradient(
-    to right,
-    transparent calc(50% - 2.5px),
-    rgba(14, 12, 10, 0.85) calc(50% - 2.5px),
-    rgba(14, 12, 10, 0.85) calc(50% - 1.5px),
-    #f2ece0 calc(50% - 1.5px),
-    #f2ece0 calc(50% + 1.5px),
-    rgba(14, 12, 10, 0.85) calc(50% + 1.5px),
-    rgba(14, 12, 10, 0.85) calc(50% + 2.5px),
-    transparent calc(50% + 2.5px)
-  );
 }
 .scrub::-moz-range-thumb {
-  width: 24px;
-  height: 22px;
+  width: 1px;
+  height: 100%;
+  background: transparent;
   border: none;
-  background: linear-gradient(
-    to right,
-    transparent calc(50% - 2.5px),
-    rgba(14, 12, 10, 0.85) calc(50% - 2.5px),
-    rgba(14, 12, 10, 0.85) calc(50% - 1.5px),
-    #f2ece0 calc(50% - 1.5px),
-    #f2ece0 calc(50% + 1.5px),
-    rgba(14, 12, 10, 0.85) calc(50% + 1.5px),
-    rgba(14, 12, 10, 0.85) calc(50% + 2.5px),
-    transparent calc(50% + 2.5px)
-  );
-}
-
-/* Full-height playhead once the waveform is showing. */
-.scrub.tall::-webkit-slider-thumb {
-  height: 52px;
-}
-.scrub.tall::-moz-range-thumb {
-  height: 52px;
-}
-
-.scrub:disabled::-webkit-slider-thumb {
-  opacity: 0.35;
-}
-.scrub:disabled::-moz-range-thumb {
-  opacity: 0.35;
 }
 </style>
