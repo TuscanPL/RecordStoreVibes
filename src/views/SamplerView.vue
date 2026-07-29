@@ -31,6 +31,36 @@ const trackMeta = computed(
   () => record.value?.tracks.find(t => t.name === trackName.value) ?? null,
 )
 
+/* ---- zoom ---- */
+
+/** Seconds of context shown either side, as a share of the region. */
+const ZOOM_PAD = 0.15
+
+const zoomed = ref(false)
+
+/** What zoom frames: the range being chopped, else the current chop. */
+const zoomAnchor = computed<{ start: number; end: number } | null>(() => {
+  if (lazy.value) return lazyRange.value
+  const cur = current.value
+  return cur ? { start: cur.startSec, end: cur.endSec } : null
+})
+
+/**
+ * The slice of track on screen. Everything positional works against this
+ * rather than the whole file, so zooming needs no separate code path.
+ */
+const view = computed(() => {
+  const a = zoomAnchor.value
+  if (!zoomed.value || !a || total.value <= 0) return { start: 0, end: total.value }
+  const pad = Math.max(0.2, (a.end - a.start) * ZOOM_PAD)
+  return {
+    start: Math.max(0, a.start - pad),
+    end: Math.min(total.value, a.end + pad),
+  }
+})
+
+const canZoom = computed(() => zoomAnchor.value !== null)
+
 const degraded = computed(() => sampler.rate.value > 0 && sampler.rate.value < 44100)
 
 onMounted(async () => {
@@ -67,17 +97,33 @@ let anchor = 0
 const EDGE_GRAB_PX = 18
 const MIN_LEN = 0.05
 
+/**
+ * The view is frozen for the duration of a drag.
+ *
+ * Zoom frames the chop being edited, so without this the first pointermove
+ * rewrites the chop, the window collapses onto the new tiny region, and the
+ * rest of the drag maps against a scale that's shrinking under your finger.
+ */
+const dragView = ref<{ start: number; end: number } | null>(null)
+
+function activeView(): { start: number; end: number } {
+  return dragView.value ?? view.value
+}
+
 function timeAt(e: PointerEvent): number {
   const el = strip.value
   if (!el || total.value <= 0) return 0
   const r = el.getBoundingClientRect()
-  return Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * total.value
+  const frac = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width))
+  const v = activeView()
+  return v.start + frac * Math.max(1e-6, v.end - v.start)
 }
 
 function pxPerSec(): number {
   const el = strip.value
   if (!el || total.value <= 0) return 1
-  return el.getBoundingClientRect().width / total.value
+  const v = activeView()
+  return el.getBoundingClientRect().width / Math.max(1e-6, v.end - v.start)
 }
 
 function writePad(pad: Pad) {
@@ -87,6 +133,7 @@ function writePad(pad: Pad) {
 function onDown(e: PointerEvent) {
   if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  dragView.value = { ...view.value }
   const t = timeAt(e)
 
   // Near an edge of the current chop? Trim it instead of starting a new one.
@@ -130,6 +177,7 @@ function onMove(e: PointerEvent) {
 function onUp(e: PointerEvent) {
   if (!mode) return
   mode = null
+  dragView.value = null
   try {
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
   } catch {
@@ -208,6 +256,7 @@ function startLazyChop() {
   for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
 
   lazy.value = true
+  zoomed.value = true
   sampler.play({ startSec: start, endSec: end, pitch: 0 }, null, endLazyChop)
 }
 
@@ -241,8 +290,32 @@ function endLazyChop() {
   activePad.value = 0
 }
 
+/** Position within the visible slice, not the whole track. */
 function pct(sec: number): number {
-  return total.value > 0 ? (sec / total.value) * 100 : 0
+  const v = activeView()
+  return ((sec - v.start) / Math.max(1e-6, v.end - v.start)) * 100
+}
+
+/** True when a region overlaps what's on screen at all. */
+function inView(a: number, b: number): boolean {
+  const v = activeView()
+  return b > v.start && a < v.end
+}
+
+/** Plays the tail of the trim, for checking where the out point lands. */
+const ROLL_SEC = 3
+
+function roll() {
+  const cur = current.value
+  if (!cur) return
+  sampler.play(
+    {
+      startSec: Math.max(cur.startSec, cur.endSec - ROLL_SEC),
+      endSec: cur.endSec,
+      pitch: cur.pitch,
+    },
+    activePad.value,
+  )
 }
 
 const lengthSec = computed(() =>
@@ -307,8 +380,28 @@ const lengthSec = computed(() =>
           @pointercancel="onUp"
         >
           <div class="absolute inset-0">
-            <Waveform :peaks="sampler.peaks.value" :progress="0" :markers="[]" />
+            <Waveform
+              :peaks="sampler.peaks.value"
+              :progress="0"
+              :markers="[]"
+              :range-start="total > 0 ? view.start / total : 0"
+              :range-end="total > 0 ? view.end / total : 1"
+              :dense="zoomed"
+            />
           </div>
+
+          <!-- View toggle sits on the strip: it's about what you're looking
+               at, and costs no vertical space there. -->
+          <button
+            v-if="canZoom"
+            class="absolute top-1 right-1 z-10 px-2 h-6 rounded border text-[9px] tracking-wide"
+            :class="zoomed
+              ? 'border-flag bg-ink-900/80 text-flag'
+              : 'border-ink-500 bg-ink-900/70 text-flag-soft'"
+            @pointerdown.stop="zoomed = !zoomed"
+          >
+            {{ zoomed ? 'TRIM' : 'ALL' }}
+          </button>
 
           <!-- Every assigned chop, so the whole layout is visible at once.
                v-if lives on an inner element: v-show would still evaluate the
@@ -316,7 +409,7 @@ const lengthSec = computed(() =>
                itself runs before the loop variable exists. -->
           <template v-for="(p, i) in bank" :key="i">
             <div
-              v-if="p"
+              v-if="p && inView(p.startSec, p.endSec)"
               class="absolute inset-y-0 pointer-events-none border-l"
               :class="[
                 sampler.playing.value === i
@@ -387,17 +480,40 @@ const lengthSec = computed(() =>
           <span class="text-[10px] text-ink-500 w-4">IN</span>
           <button class="trim" :disabled="!current" @click="nudge('startSec', -0.1)">−</button>
           <button class="trim" :disabled="!current" @click="nudge('startSec', 0.1)">+</button>
-          <button
-            class="flex-1 h-9 rounded-lg bg-ink-600 text-cream text-[12px] active:bg-ink-500
-                   disabled:opacity-40"
-            :disabled="!current"
-            @click="current && sampler.play(current, activePad)"
-          >
-            Preview
-          </button>
+          <span class="flex-1" />
           <button class="trim" :disabled="!current" @click="nudge('endSec', -0.1)">−</button>
           <button class="trim" :disabled="!current" @click="nudge('endSec', 0.1)">+</button>
           <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
+        </div>
+
+        <div v-if="!lazy" class="flex items-center gap-2 mt-2">
+          <button
+            class="flex-1 h-10 rounded-lg bg-ink-600 text-cream text-[13px]
+                   active:bg-ink-500 disabled:opacity-40"
+            :disabled="!current"
+            @click="current && sampler.play(current, activePad)"
+          >
+            Play
+          </button>
+          <!-- The tail of the trim, for hearing where the out point lands. -->
+          <button
+            class="flex-1 h-10 rounded-lg border border-ink-500 text-flag-soft text-[13px]
+                   active:bg-ink-700 disabled:opacity-40"
+            :disabled="!current"
+            @click="roll"
+          >
+            Roll
+          </button>
+          <button
+            class="px-3 h-10 rounded-lg border text-[11px] tracking-wide active:bg-ink-700
+                   disabled:opacity-40"
+            :class="lazy ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
+            :disabled="!current"
+            title="Play the trim and cut on the fly"
+            @click="startLazyChop"
+          >
+            CHOP
+          </button>
         </div>
 
         <!-- Pitch: varispeed, so it shifts length too. -->
@@ -417,14 +533,6 @@ const lengthSec = computed(() =>
           <span class="w-8 text-right text-[12px] tabular-nums text-flag">
             {{ (current?.pitch ?? 0) > 0 ? '+' : '' }}{{ current?.pitch ?? 0 }}
           </span>
-          <button
-            class="px-2.5 h-9 rounded-lg border text-[10px] tracking-wide active:bg-ink-700"
-            :class="lazy ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
-            title="Play the trim and cut on the fly"
-            @click="startLazyChop"
-          >
-            CHOP
-          </button>
         </div>
       </div>
 
