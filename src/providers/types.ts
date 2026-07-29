@@ -1,50 +1,82 @@
+/** A single playable audio file within an IA item. */
 export interface Track {
-  id: string
+  /** Filename within the IA item — stable, used as the marker's track key. */
+  name: string
   title: string
-  duration: number | null
+  durationSec: number | null
   streamUrl: string
 }
 
-export interface AlbumSide {
-  tracks: Track[]
-}
-
-export interface Album {
+/** An Internet Archive item. One item = one "record" in the crate. */
+export interface Record {
+  /** IA identifier. */
   id: string
   title: string
-  artist: string
+  creator: string
+  collection: string
   year: string | null
-  genre: string
-  coverArtUrl: string | null
-  sides: {
-    A: AlbumSide
-    B: AlbumSide
-  }
+  artworkUrl: string | null
+  tracks: Track[]
+  /** archive.org details page — goes into the export manifest. */
   sourceUrl: string
-  provider: string
 }
 
-export interface AlbumDetails extends Album {
-  description: string | null
+/** A flagged timestamp. The core artifact this app produces. */
+export interface Marker {
+  id: string
+  recordId: string
+  /** Filename of the track within the item. */
+  trackName: string
+  timestampSec: number
+  note?: string
+  createdAt: number
+}
+
+/** A finite, named list of records. No pagination, no infinite scroll. */
+export interface CrateListing {
+  label: string
+  records: Record[]
+  /** Total matches upstream, so the UI can be honest about what it capped. */
+  totalFound: number
 }
 
 export interface MusicProvider {
   name: string
-  search(genre: string, count: number, excludeIds: string[]): Promise<Album[]>
-  getAlbumDetails(id: string): Promise<AlbumDetails>
-  getStreamUrl(trackId: string): Promise<string>
-  getAlbumArt(id: string): Promise<string | null>
+  search(query: string, limit: number): Promise<CrateListing>
+  browseCollection(collectionId: string, limit: number): Promise<CrateListing>
+  getRecord(id: string): Promise<Record | null>
 }
 
-export const GENRES = [
-  { id: 'jazz', label: 'Jazz', icon: '🎺' },
-  { id: 'classical', label: 'Classical', icon: '🎻' },
-  { id: 'blues', label: 'Blues', icon: '🎸' },
-  { id: 'folk', label: 'Folk', icon: '🪕' },
-  { id: 'world', label: 'World Music', icon: '🥁' },
-  { id: 'gospel', label: 'Gospel', icon: '🎹' },
-  { id: 'spoken', label: 'Spoken Word', icon: '🎙' },
-  { id: 'surprise', label: 'Surprise Me', icon: '🎲' },
+/** Curated entry points. Deliberately few — this is a menu, not a feed. */
+export const COLLECTIONS = [
+  {
+    id: 'georgeblood',
+    label: '78 RPM',
+    blurb: 'Great 78 Project — shellac digitisations',
+  },
+  {
+    id: 'audio_music',
+    label: 'Music',
+    blurb: 'General music uploads',
+  },
+  {
+    id: 'etree',
+    label: 'Live Sets',
+    blurb: 'Live Music Archive — soundboard recordings',
+  },
+  {
+    id: 'audio_religion',
+    label: 'Gospel',
+    blurb: 'Spirituals, hymns, sermons',
+  },
+  {
+    id: 'audio_bookspoetry',
+    label: 'Spoken',
+    blurb: 'Poetry, readings, speech',
+  },
+  {
+    id: 'oldtimeradio',
+    label: 'Radio',
+    blurb: 'Old time radio broadcasts',
+  },
 ] as const
-
-export type GenreId = (typeof GENRES)[number]['id']

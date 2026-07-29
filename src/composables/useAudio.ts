@@ -1,221 +1,192 @@
-import { ref, watch, onUnmounted } from 'vue'
-import { useAppStore } from '../stores/app'
+import { ref, computed, readonly } from 'vue'
+import type { Record as CrateRecord, Track } from '../providers/types'
 
-let audioContext: AudioContext | null = null
-let sourceNode: AudioBufferSourceNode | null = null
-let gainNode: GainNode | null = null
-let currentBuffer: AudioBuffer | null = null
-let startTime = 0
-let pauseOffset = 0
+/**
+ * One element for the whole app, living outside any component so playback
+ * survives navigation between screens.
+ *
+ * Deliberately an <audio> element rather than the Web Audio API: this app
+ * streams long files over cellular and needs lock screen transport, and
+ * decodeAudioData would require the whole file in memory before a note
+ * sounds. No pitch or rate manipulation is in scope, so there is nothing
+ * to trade away.
+ */
+let el: HTMLAudioElement | null = null
 
-function getAudioContext(): AudioContext {
-  if (!audioContext) {
-    audioContext = new AudioContext()
+const currentRecord = ref<CrateRecord | null>(null)
+const currentTrack = ref<Track | null>(null)
+const isPlaying = ref(false)
+const isLoading = ref(false)
+const error = ref<string | null>(null)
+const position = ref(0)
+const duration = ref(0)
+
+function element(): HTMLAudioElement {
+  if (el) return el
+
+  el = new Audio()
+  el.preload = 'metadata'
+  // No crossOrigin: plain playback doesn't need CORS, and asking for it
+  // turns any missing header on archive.org into a hard failure.
+
+  el.addEventListener('playing', () => {
+    isPlaying.value = true
+    isLoading.value = false
+    error.value = null
+  })
+  el.addEventListener('pause', () => {
+    isPlaying.value = false
+  })
+  el.addEventListener('waiting', () => {
+    isLoading.value = true
+  })
+  el.addEventListener('canplay', () => {
+    isLoading.value = false
+  })
+  el.addEventListener('timeupdate', () => {
+    position.value = el!.currentTime
+  })
+  el.addEventListener('durationchange', () => {
+    duration.value = Number.isFinite(el!.duration) ? el!.duration : 0
+  })
+  el.addEventListener('error', () => {
+    isLoading.value = false
+    isPlaying.value = false
+    error.value = "Couldn't play this file — archive.org may not have a streamable copy."
+  })
+  el.addEventListener('ended', () => {
+    // A record finishes. Nothing plays next, by design.
+    isPlaying.value = false
+    position.value = 0
+  })
+
+  return el
+}
+
+function syncMediaSession() {
+  if (!('mediaSession' in navigator)) return
+  const record = currentRecord.value
+  const track = currentTrack.value
+  if (!record || !track) return
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title,
+    artist: record.creator,
+    album: record.title,
+    artwork: record.artworkUrl ? [{ src: record.artworkUrl, sizes: '512x512' }] : [],
+  })
+
+  const set = (action: MediaSessionAction, handler: (() => void) | null) => {
+    try {
+      navigator.mediaSession.setActionHandler(action, handler)
+    } catch {
+      // Not every browser supports every action.
+    }
   }
-  return audioContext
+
+  set('play', () => void play())
+  set('pause', () => pause())
+  set('seekbackward', () => nudge(-10))
+  set('seekforward', () => nudge(10))
+  // nexttrack / previoustrack are intentionally left unset — there is no
+  // queue to advance into.
+  set('nexttrack', null)
+  set('previoustrack', null)
+}
+
+async function load(record: CrateRecord, track: Track, autoplay = true) {
+  const audio = element()
+  const changed = currentTrack.value?.streamUrl !== track.streamUrl
+
+  currentRecord.value = record
+  currentTrack.value = track
+
+  if (changed) {
+    error.value = null
+    isLoading.value = true
+    position.value = 0
+    duration.value = track.durationSec ?? 0
+    audio.src = track.streamUrl
+    audio.load()
+  }
+
+  syncMediaSession()
+  if (autoplay) await play()
+}
+
+async function play() {
+  const audio = element()
+  if (!audio.src) return
+  try {
+    await audio.play()
+  } catch {
+    // Typically an autoplay-policy rejection; the user taps again.
+    isPlaying.value = false
+    isLoading.value = false
+  }
+}
+
+function pause() {
+  element().pause()
+}
+
+async function toggle() {
+  if (isPlaying.value) pause()
+  else await play()
+}
+
+function seek(seconds: number) {
+  const audio = element()
+  const max = Number.isFinite(audio.duration) ? audio.duration : seconds
+  audio.currentTime = Math.min(Math.max(0, seconds), max)
+  position.value = audio.currentTime
+}
+
+function nudge(delta: number) {
+  seek((element().currentTime || 0) + delta)
+}
+
+function stop() {
+  const audio = element()
+  audio.pause()
+  audio.removeAttribute('src')
+  audio.load()
+  currentRecord.value = null
+  currentTrack.value = null
+  isPlaying.value = false
+  position.value = 0
+  duration.value = 0
 }
 
 export function useAudio() {
-  const store = useAppStore()
-  const isLoading = ref(false)
-  const loadError = ref<string | null>(null)
-  const duration = ref(0)
-  const bufferCache = new Map<string, AudioBuffer>()
-
-  function getPlaybackRate(): number {
-    return store.rpm === 45 ? 1.35 : 1.0
-  }
-
-  async function loadTrack(url: string): Promise<void> {
-    isLoading.value = true
-    loadError.value = null
-
-    try {
-      stop()
-
-      if (bufferCache.has(url)) {
-        currentBuffer = bufferCache.get(url)!
-        duration.value = currentBuffer.duration
-        isLoading.value = false
-        return
-      }
-
-      const ctx = getAudioContext()
-      const response = await fetch(url)
-      if (!response.ok) throw new Error(`Failed to fetch audio: ${response.status}`)
-
-      const arrayBuffer = await response.arrayBuffer()
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
-
-      bufferCache.set(url, audioBuffer)
-      currentBuffer = audioBuffer
-      duration.value = audioBuffer.duration
-    } catch (err) {
-      loadError.value = err instanceof Error ? err.message : 'Failed to load audio'
-      currentBuffer = null
-      duration.value = 0
-    } finally {
-      isLoading.value = false
-    }
-  }
-
-  function play() {
-    if (!currentBuffer) return
-
-    const ctx = getAudioContext()
-    if (ctx.state === 'suspended') {
-      ctx.resume()
-    }
-
-    stop()
-
-    sourceNode = ctx.createBufferSource()
-    sourceNode.buffer = currentBuffer
-    sourceNode.playbackRate.value = getPlaybackRate()
-
-    gainNode = ctx.createGain()
-    gainNode.gain.value = 1.0
-
-    sourceNode.connect(gainNode)
-    gainNode.connect(ctx.destination)
-
-    sourceNode.start(0, pauseOffset)
-    startTime = ctx.currentTime - pauseOffset / getPlaybackRate()
-    store.isPlaying = true
-
-    sourceNode.onended = () => {
-      if (store.isPlaying) {
-        store.isPlaying = false
-        pauseOffset = 0
-        store.playbackPosition = 0
-        // Auto-advance to next track
-        store.nextTrack()
-      }
-    }
-  }
-
-  function pause() {
-    if (!sourceNode || !store.isPlaying) return
-
-    const ctx = getAudioContext()
-    pauseOffset = (ctx.currentTime - startTime) * getPlaybackRate()
-    store.playbackPosition = pauseOffset
-
-    sourceNode.onended = null
-    sourceNode.stop()
-    sourceNode.disconnect()
-    sourceNode = null
-    store.isPlaying = false
-  }
-
-  function stop() {
-    if (sourceNode) {
-      sourceNode.onended = null
-      try {
-        sourceNode.stop()
-      } catch {
-        // already stopped
-      }
-      sourceNode.disconnect()
-      sourceNode = null
-    }
-    if (gainNode) {
-      gainNode.disconnect()
-      gainNode = null
-    }
-    pauseOffset = 0
-    store.isPlaying = false
-  }
-
-  function seek(position: number) {
-    const wasPlaying = store.isPlaying
-    if (wasPlaying) {
-      pause()
-    }
-    pauseOffset = Math.max(0, Math.min(position, duration.value))
-    store.playbackPosition = pauseOffset
-    if (wasPlaying) {
-      play()
-    }
-  }
-
-  function seekBackward(seconds: number = 5) {
-    const currentPos = getPosition()
-    seek(Math.max(0, currentPos - seconds))
-  }
-
-  function seekForward(seconds: number = 5) {
-    const currentPos = getPosition()
-    seek(Math.min(duration.value, currentPos + seconds))
-  }
-
-  function getPosition(): number {
-    if (!store.isPlaying || !audioContext) return pauseOffset
-    return (audioContext.currentTime - startTime) * getPlaybackRate()
-  }
-
-  function setPlaybackRate(rate: number) {
-    if (sourceNode) {
-      sourceNode.playbackRate.value = rate
-      if (audioContext) {
-        startTime = audioContext.currentTime - pauseOffset / rate
-      }
-    }
-  }
-
-  // Watch RPM changes
-  watch(() => store.rpm, () => {
-    setPlaybackRate(getPlaybackRate())
-  })
-
-  // Watch track changes
-  watch(() => store.currentTrack, async (track) => {
-    if (track) {
-      stop()
-      pauseOffset = 0
-      store.playbackPosition = 0
-      await loadTrack(track.streamUrl)
-    }
-  })
-
-  // Update playback position periodically
-  let positionInterval: ReturnType<typeof setInterval> | null = null
-
-  function startPositionTracking() {
-    if (positionInterval) return
-    positionInterval = setInterval(() => {
-      if (store.isPlaying) {
-        store.playbackPosition = getPosition()
-      }
-    }, 250)
-  }
-
-  function stopPositionTracking() {
-    if (positionInterval) {
-      clearInterval(positionInterval)
-      positionInterval = null
-    }
-  }
-
-  startPositionTracking()
-
-  onUnmounted(() => {
-    stop()
-    stopPositionTracking()
-  })
-
   return {
-    isLoading,
-    loadError,
-    duration,
-    loadTrack,
+    currentRecord: readonly(currentRecord),
+    currentTrack: readonly(currentTrack),
+    isPlaying: readonly(isPlaying),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+    position: readonly(position),
+    duration: readonly(duration),
+    /** Falls back to the item's declared length before metadata lands. */
+    effectiveDuration: computed(
+      () => duration.value || currentTrack.value?.durationSec || 0,
+    ),
+    load,
     play,
     pause,
-    stop,
+    toggle,
     seek,
-    seekBackward,
-    seekForward,
-    getPosition,
-    setPlaybackRate,
+    nudge,
+    stop,
   }
+}
+
+export function formatTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
+  const total = Math.floor(seconds)
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${m}:${String(s).padStart(2, '0')}`
 }

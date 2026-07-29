@@ -1,24 +1,25 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: [
-    './index.html',
-    './src/**/*.{vue,js,ts,jsx,tsx}',
-  ],
+  content: ['./index.html', './src/**/*.{vue,js,ts}'],
   theme: {
     extend: {
       colors: {
-        vinyl: {
-          black: '#1a1a1a',
-          brown: '#3d2b1f',
-          amber: '#c8a96e',
-          cream: '#f5f0e1',
-          orange: '#c47d3b',
-          warm: '#2a1f14',
+        ink: {
+          900: '#0e0c0a',
+          800: '#171310',
+          700: '#221c17',
+          600: '#332a22',
+          500: '#3d342b',
         },
+        flag: {
+          DEFAULT: '#d99a4e',
+          soft: '#c8a96e',
+          dim: '#8a7454',
+        },
+        cream: '#f2ece0',
       },
       fontFamily: {
         display: ['"Playfair Display"', 'Georgia', 'serif'],
-        body: ['"Inter"', 'system-ui', 'sans-serif'],
       },
     },
   },

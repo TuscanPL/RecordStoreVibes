@@ -1,22 +1,11 @@
 import type { MusicProvider } from './types'
 import { InternetArchiveProvider } from './internet-archive'
 
-const providers: Map<string, MusicProvider> = new Map()
+/**
+ * Single provider by design — the handoff rules out multi-source
+ * aggregation for v1. This indirection exists only so the app code
+ * never imports the IA client directly.
+ */
+export const provider: MusicProvider = new InternetArchiveProvider()
 
-export function registerProvider(provider: MusicProvider) {
-  providers.set(provider.name, provider)
-}
-
-export function getProvider(name?: string): MusicProvider {
-  if (name) {
-    const p = providers.get(name)
-    if (p) return p
-  }
-  const first = providers.values().next()
-  if (first.done) throw new Error('No music providers registered')
-  return first.value
-}
-
-registerProvider(new InternetArchiveProvider())
-
-export { type MusicProvider } from './types'
+export * from './types'
