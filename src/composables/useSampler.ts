@@ -74,12 +74,34 @@ const error = ref<string | null>(null)
 const rate = ref(0)
 const playing = ref<number | null>(null)
 
+/**
+ * Where the current voice is, in buffer seconds. AudioBufferSourceNode
+ * doesn't report position, so it's derived from the context clock — this is
+ * what lazy chopping cuts against.
+ */
+const playhead = ref(0)
+
 /** Mute group: exactly one voice, so a new hit cuts the last. */
 let voice: AudioBufferSourceNode | null = null
+let voiceStartedAt = 0
+let voiceOffset = 0
+let voiceRate = 1
+let raf: number | null = null
+
+function trackPlayhead() {
+  if (!voice || !ctx) return
+  playhead.value = voiceOffset + (ctx.currentTime - voiceStartedAt) * voiceRate
+  raf = requestAnimationFrame(trackPlayhead)
+}
 
 export function useSampler() {
   function stop() {
+    if (raf !== null) {
+      cancelAnimationFrame(raf)
+      raf = null
+    }
     if (voice) {
+      // Cleared first so a manual stop never fires the end callback.
       voice.onended = null
       try {
         voice.stop()
@@ -186,8 +208,11 @@ export function useSampler() {
     }
   }
 
-  /** Plays a region. `index` is only for showing which pad is lit. */
-  function play(pad: Pad, index: number | null = null) {
+  /**
+   * Plays a region. `index` is only for showing which pad is lit; `onEnd`
+   * fires on natural completion, not on a manual stop.
+   */
+  function play(pad: Pad, index: number | null = null, onEnd?: () => void) {
     const buf = buffer.value
     if (!buf) return
     const c = audioCtx()
@@ -206,6 +231,11 @@ export function useSampler() {
       if (voice === src) {
         voice = null
         playing.value = null
+        if (raf !== null) {
+          cancelAnimationFrame(raf)
+          raf = null
+        }
+        onEnd?.()
       }
     }
     // Third argument is buffer time, so a pitched-up hit finishes sooner —
@@ -213,7 +243,26 @@ export function useSampler() {
     src.start(0, start, span)
     voice = src
     playing.value = index
+
+    voiceStartedAt = c.currentTime
+    voiceOffset = start
+    voiceRate = src.playbackRate.value
+    playhead.value = start
+    raf = requestAnimationFrame(trackPlayhead)
   }
 
-  return { buffer, peaks, loading, progress, error, rate, playing, load, play, stop, release }
+  return {
+    buffer,
+    peaks,
+    loading,
+    progress,
+    error,
+    rate,
+    playing,
+    playhead,
+    load,
+    play,
+    stop,
+    release,
+  }
 }

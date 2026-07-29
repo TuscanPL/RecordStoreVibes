@@ -20,8 +20,6 @@ const loadError = ref<string | null>(null)
 
 /** The pad being worked on. Dragging the waveform writes into this one. */
 const activePad = ref(0)
-/** Waiting for a tap to say where auto-chopping should begin. */
-const arming = ref(false)
 
 const trackName = computed(() => decodeURIComponent(props.track))
 const key = computed(() => padKey(props.id, trackName.value))
@@ -87,15 +85,9 @@ function writePad(pad: Pad) {
 }
 
 function onDown(e: PointerEvent) {
-  if (!sampler.buffer.value) return
+  if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   const t = timeAt(e)
-
-  if (arming.value) {
-    lazyChop(t, DEFAULT_CHOP_SEC, 0)
-    arming.value = false
-    return
-  }
 
   // Near an edge of the current chop? Trim it instead of starting a new one.
   const cur = current.value
@@ -166,6 +158,11 @@ function setPitch(semitones: number) {
 /* ---- pads ---- */
 
 function hitPad(i: number) {
+  // Mid-chop, any pad is the cut button.
+  if (lazy.value) {
+    lazyCut()
+    return
+  }
   const existing = bank.value[i]
   activePad.value = i
   if (existing) sampler.play(existing, i)
@@ -175,41 +172,73 @@ function clearPad(i: number) {
   library.setPad(key.value, i, null)
 }
 
-/** Fallback slice length when there's no trim to take one from. */
-const DEFAULT_CHOP_SEC = 1
+/* ---- lazy chop ---- */
 
 /**
- * Lazy chop. A trim in hand is the template for the whole grid — chopping
- * begins at its start, inherits its length and pitch, and pad 1 comes out
- * as exactly what you trimmed. Only without one does it have to ask where.
+ * Lazy chopping: the trimmed range plays through and every pad tap cuts at
+ * the playhead. The first chop starts at the trim's start whether you tap
+ * or not, each tap closes one chop and opens the next, and the last runs to
+ * the trim's end — so N taps give N+1 chops filling pads in order.
  *
- * Fills the whole bank, so anything already assigned is replaced.
+ * Not the same as evenly spaced auto-slicing; the point is that the cuts
+ * land where you heard them, not on a grid.
  */
+const lazy = ref(false)
+const lazyRange = ref({ start: 0, end: 0 })
+/** Cut points so far. Always begins with the range start. */
+const lazyBounds = ref<number[]>([])
+const lazyNextPad = ref(0)
+
+const MIN_CHOP = 0.05
+
 function startLazyChop() {
-  const cur = current.value
-  if (cur) {
-    lazyChop(cur.startSec, Math.max(0.1, cur.endSec - cur.startSec), cur.pitch)
-    arming.value = false
-  } else {
-    arming.value = !arming.value
+  if (lazy.value) {
+    endLazyChop()
+    return
   }
+  const cur = current.value
+  const start = cur ? cur.startSec : 0
+  const end = cur ? cur.endSec : total.value
+  if (end - start < MIN_CHOP * 2) return
+
+  // Captured before clearing: the range lives in a pad we're about to wipe.
+  lazyRange.value = { start, end }
+  lazyBounds.value = [start]
+  lazyNextPad.value = 0
+  for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
+
+  lazy.value = true
+  sampler.play({ startSec: start, endSec: end, pitch: 0 }, null, endLazyChop)
 }
 
-function lazyChop(start: number, len: number, pitch: number) {
-  for (let i = 0; i < PAD_COUNT; i++) {
-    const s = start + i * len
-    if (s >= total.value) {
-      library.setPad(key.value, i, null)
-      continue
-    }
-    library.setPad(key.value, i, {
-      startSec: s,
-      endSec: Math.min(total.value, s + len),
-      pitch,
-    })
+/** One tap: close the open chop at the playhead, open the next. */
+function lazyCut() {
+  const t = sampler.playhead.value
+  const last = lazyBounds.value[lazyBounds.value.length - 1] ?? lazyRange.value.start
+  if (t - last < MIN_CHOP) return
+  if (lazyNextPad.value >= PAD_COUNT) return
+
+  library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: t, pitch: 0 })
+  lazyNextPad.value++
+  lazyBounds.value.push(t)
+
+  // Bank full — nothing left to cut into.
+  if (lazyNextPad.value >= PAD_COUNT) endLazyChop()
+}
+
+function endLazyChop() {
+  if (!lazy.value) return
+  lazy.value = false
+
+  const last = lazyBounds.value[lazyBounds.value.length - 1] ?? lazyRange.value.start
+  const end = lazyRange.value.end
+  // The final chop always runs to the end of the trim.
+  if (lazyNextPad.value < PAD_COUNT && end - last >= MIN_CHOP) {
+    library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: end, pitch: 0 })
+    lazyNextPad.value++
   }
+  sampler.stop()
   activePad.value = 0
-  if (bank.value[0]) sampler.play(bank.value[0]!, 0)
 }
 
 function pct(sec: number): number {
@@ -271,7 +300,7 @@ const lengthSec = computed(() =>
         <div
           ref="strip"
           class="sel relative h-24 rounded overflow-hidden bg-ink-800"
-          :class="arming ? 'ring-2 ring-flag' : ''"
+          :class="lazy ? 'ring-2 ring-flag' : ''"
           @pointerdown="onDown"
           @pointermove="onMove"
           @pointerup="onUp"
@@ -316,16 +345,36 @@ const lengthSec = computed(() =>
             />
           </template>
 
+          <!-- Live playhead: what the cuts are made against. -->
+          <div
+            v-if="sampler.playing.value !== null || lazy"
+            class="absolute inset-y-0 w-0.5 bg-cream pointer-events-none"
+            :style="{ left: `${pct(sampler.playhead.value)}%` }"
+          />
+
           <p
-            v-if="arming"
-            class="absolute inset-0 flex items-center justify-center text-[12px]
-                   text-cream bg-ink-900/70 pointer-events-none"
+            v-if="lazy"
+            class="absolute inset-x-0 bottom-0 text-center text-[10px] py-0.5
+                   text-ink-900 bg-flag/90 pointer-events-none"
           >
-            Tap where chopping should start
+            Tap any pad to cut · {{ lazyNextPad }} chopped
           </p>
         </div>
 
-        <div class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim">
+        <div v-if="lazy" class="mt-2">
+          <button
+            class="w-full h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                   active:scale-[0.99] transition-transform"
+            @click="endLazyChop"
+          >
+            DONE CHOPPING
+          </button>
+        </div>
+
+        <div
+          v-if="!lazy"
+          class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
+        >
           <span>{{ current ? formatTime(current.startSec) : '—' }}</span>
           <span class="text-flag">
             Pad {{ activePad + 1 }} · {{ lengthSec.toFixed(2) }}s
@@ -334,7 +383,7 @@ const lengthSec = computed(() =>
         </div>
 
         <!-- Trim -->
-        <div class="flex items-center gap-1.5 mt-2">
+        <div v-if="!lazy" class="flex items-center gap-1.5 mt-2">
           <span class="text-[10px] text-ink-500 w-4">IN</span>
           <button class="trim" :disabled="!current" @click="nudge('startSec', -0.1)">−</button>
           <button class="trim" :disabled="!current" @click="nudge('startSec', 0.1)">+</button>
@@ -352,7 +401,7 @@ const lengthSec = computed(() =>
         </div>
 
         <!-- Pitch: varispeed, so it shifts length too. -->
-        <div class="flex items-center gap-2 mt-2">
+        <div v-if="!lazy" class="flex items-center gap-2 mt-2">
           <span class="text-[10px] text-ink-500 w-9">PITCH</span>
           <input
             type="range"
@@ -370,8 +419,8 @@ const lengthSec = computed(() =>
           </span>
           <button
             class="px-2.5 h-9 rounded-lg border text-[10px] tracking-wide active:bg-ink-700"
-            :class="arming ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
-            :title="current ? 'Chop from the trim' : 'Pick a start point'"
+            :class="lazy ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
+            title="Play the trim and cut on the fly"
             @click="startLazyChop"
           >
             CHOP
