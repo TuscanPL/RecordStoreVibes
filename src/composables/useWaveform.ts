@@ -45,14 +45,14 @@ export function waveformTier(durationSec: number): 'instant' | 'offered' | 'too-
   return 'too-long'
 }
 
-function toPeaks(buffer: AudioBuffer): Float32Array {
-  const peaks = new Float32Array(BUCKETS)
+export function toPeaks(buffer: AudioBuffer, buckets: number = BUCKETS): Float32Array {
+  const peaks = new Float32Array(buckets)
   const channels = buffer.numberOfChannels
-  const per = Math.max(1, Math.floor(buffer.length / BUCKETS))
+  const per = Math.max(1, Math.floor(buffer.length / buckets))
 
   for (let ch = 0; ch < channels; ch++) {
     const data = buffer.getChannelData(ch)
-    for (let b = 0; b < BUCKETS; b++) {
+    for (let b = 0; b < buckets; b++) {
       const start = b * per
       const end = Math.min(start + per, data.length)
       let max = 0

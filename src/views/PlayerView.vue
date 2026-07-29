@@ -459,6 +459,15 @@ watch(trackIndex, () => {
             no waveform
           </span>
 
+          <button
+            v-if="track"
+            class="px-2 h-6 rounded border border-ink-500 text-[10px] tracking-wide
+                   text-flag-soft active:bg-ink-700"
+            @click="router.push(`/r/${record!.id}/pads/${encodeURIComponent(track.name)}`)"
+          >
+            PADS
+          </button>
+
           <span>{{ total ? formatTime(total) : '--:--' }}</span>
         </div>
 

@@ -11,7 +11,7 @@ const audio = useAudio()
 
 // The player is a pushed detail view — it owns the whole screen, and the
 // now-playing strip would just be a link back to where you already are.
-const showTabs = computed(() => route.name !== 'player')
+const showTabs = computed(() => route.name !== 'player' && route.name !== 'sampler')
 
 /**
  * Whether the strip carries over out of the player.
