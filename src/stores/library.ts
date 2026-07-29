@@ -7,6 +7,7 @@ import {
   newId,
   padKey,
   PAD_COUNT,
+  PAD_BANKS,
   type Persisted,
   type Pad,
   type TrimState,
@@ -32,7 +33,7 @@ export const useLibrary = defineStore('library', () => {
   const markers = ref<Marker[]>(initial.markers)
   const starred = ref<{ [id: string]: number }>(initial.starred)
   const unplayable = ref<string[]>(initial.unplayable)
-  const pads = ref<{ [trackKey: string]: (Pad | null)[] }>(initial.pads)
+  const pads = ref<{ [trackKey: string]: (Pad | null)[][] }>(initial.pads)
   const trims = ref<{ [trackKey: string]: TrimState }>(initial.trims)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
@@ -57,15 +58,38 @@ export const useLibrary = defineStore('library', () => {
     { deep: true },
   )
 
-  function padsFor(key: string): (Pad | null)[] {
-    return pads.value[key] ?? new Array(PAD_COUNT).fill(null)
+  function padsFor(key: string, bank = 0): (Pad | null)[] {
+    return pads.value[key]?.[bank] ?? new Array(PAD_COUNT).fill(null)
   }
 
-  function setPad(key: string, index: number, pad: Pad | null) {
-    const bank = [...padsFor(key)]
-    bank[index] = pad
-    if (bank.every(p => p === null)) delete pads.value[key]
-    else pads.value[key] = bank
+  function writeBanks(key: string, banks: (Pad | null)[][]) {
+    // Drop the whole track once every bank is empty, so gc can reclaim it.
+    if (banks.every(b => b.every(p => p === null))) delete pads.value[key]
+    else pads.value[key] = banks
+  }
+
+  function setPad(key: string, bank: number, index: number, pad: Pad | null) {
+    const banks: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
+    while (banks.length <= bank) banks.push(new Array(PAD_COUNT).fill(null))
+    banks[bank]![index] = pad
+    writeBanks(key, banks)
+  }
+
+  /** Empties one bank, leaving the others alone. */
+  function clearBank(key: string, bank: number) {
+    const banks: (Pad | null)[][] = (pads.value[key] ?? []).map(b => [...b])
+    if (!banks[bank]) return
+    banks[bank] = new Array(PAD_COUNT).fill(null)
+    writeBanks(key, banks)
+  }
+
+  /** How many pads each bank of a track holds, for the switcher. */
+  function bankCounts(key: string): number[] {
+    const banks = pads.value[key] ?? []
+    return Array.from(
+      { length: PAD_BANKS },
+      (_, i) => banks[i]?.filter(Boolean).length ?? 0,
+    )
   }
 
   function trimFor(key: string): TrimState | null {
@@ -193,7 +217,7 @@ export const useLibrary = defineStore('library', () => {
       const at = k.indexOf('::')
       const recordId = k.slice(0, at)
       const record = records.value[recordId]
-      const count = bank.filter(Boolean).length
+      const count = bank.reduce((n, b) => n + b.filter(Boolean).length, 0)
       if (!record || count === 0) continue
       out.push({ key: k, recordId, trackName: k.slice(at + 2), count, record })
     }
@@ -212,6 +236,8 @@ export const useLibrary = defineStore('library', () => {
     isUnplayable,
     padsFor,
     setPad,
+    bankCounts,
+    clearBank,
     trimFor,
     setTrim,
     padKey,

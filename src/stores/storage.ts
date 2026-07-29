@@ -17,6 +17,8 @@ export interface TrimState {
 }
 
 export const PAD_COUNT = 16
+/** Banks of pads per track, switched by swiping the grid. */
+export const PAD_BANKS = 4
 
 /** Pads belong to a track: one decoded buffer in memory, never sixteen. */
 export function padKey(recordId: string, trackName: string): string {
@@ -41,7 +43,7 @@ export interface Persisted {
    * Pad layouts per track. Only numbers, so this is cheap to keep — the
    * audio itself is re-downloaded when you open the sampler again.
    */
-  pads: { [trackKey: string]: (Pad | null)[] }
+  pads: { [trackKey: string]: (Pad | null)[][] }
   /** Working ranges per track. Two numbers each — cheap to keep. */
   trims: { [trackKey: string]: TrimState }
 }
@@ -56,6 +58,21 @@ const EMPTY: Persisted = {
   trims: {},
 }
 
+/**
+ * Pads used to be one flat bank per track. A stored entry whose first
+ * element isn't itself an array predates banks, so it becomes bank A and
+ * the rest start empty.
+ */
+function migratePads(raw: unknown): { [k: string]: (Pad | null)[][] } {
+  const out: { [k: string]: (Pad | null)[][] } = {}
+  if (!raw || typeof raw !== 'object') return out
+  for (const [k, v] of Object.entries(raw as { [k: string]: unknown })) {
+    if (!Array.isArray(v)) continue
+    out[k] = Array.isArray(v[0]) ? (v as (Pad | null)[][]) : [v as (Pad | null)[]]
+  }
+  return out
+}
+
 export function load(): Persisted {
   try {
     const raw = localStorage.getItem(KEY)
@@ -68,7 +85,7 @@ export function load(): Persisted {
       markers: Array.isArray(parsed.markers) ? parsed.markers : [],
       starred: parsed.starred ?? {},
       unplayable: Array.isArray(parsed.unplayable) ? parsed.unplayable : [],
-      pads: parsed.pads ?? {},
+      pads: migratePads(parsed.pads),
       trims: parsed.trims ?? {},
     }
   } catch {
