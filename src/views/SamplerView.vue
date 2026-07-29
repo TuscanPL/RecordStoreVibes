@@ -256,11 +256,19 @@ function setPitch(semitones: number) {
 
 /* ---- flags ---- */
 
-/** Lengths offered when turning a flag into a trim. */
-const FLAG_LENGTHS = [0.5, 1, 2, 4, 8]
-
 const flagsOpen = ref(false)
-const flagLength = ref(2)
+
+/**
+ * Held as the raw string so typing isn't fought mid-keystroke — clamping
+ * "0" up to a minimum while someone is on their way to "0.75" makes the
+ * field unusable. Parsed and bounded only at the point of use.
+ */
+const flagLengthInput = ref('2')
+
+const flagLength = computed(() => {
+  const n = parseFloat(flagLengthInput.value)
+  return Number.isFinite(n) && n > 0 ? n : 2
+})
 
 const trackFlags = computed(() =>
   record.value ? library.markersFor(record.value.id, trackName.value) : [],
@@ -275,7 +283,8 @@ const flagPercents = computed(() =>
 function useFlag(atSec: number) {
   if (total.value <= 0) return
   const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
-  trim.value = { startSec: start, endSec: Math.min(total.value, start + flagLength.value) }
+  const end = Math.max(start + MIN_LEN, Math.min(total.value, start + flagLength.value))
+  trim.value = { startSec: start, endSec: end }
   zoomed.value = true
   commitTrim()
   playTrim()
@@ -615,19 +624,19 @@ const trimLength = computed(() =>
           </button>
 
           <div v-if="flagsOpen" class="px-3 pb-3">
-            <div class="flex items-center gap-1.5 mb-2">
-              <span class="text-[10px] text-ink-500 mr-0.5">LENGTH</span>
-              <button
-                v-for="len in FLAG_LENGTHS"
-                :key="len"
-                class="flex-1 h-8 rounded text-[11px] tabular-nums border transition-colors"
-                :class="flagLength === len
-                  ? 'bg-flag text-ink-900 border-flag font-medium'
-                  : 'border-ink-500 text-flag-soft active:bg-ink-700'"
-                @click="flagLength = len"
-              >
-                {{ len }}s
-              </button>
+            <div class="flex items-center gap-2 mb-2">
+              <span class="text-[10px] text-ink-500">LENGTH</span>
+              <input
+                v-model="flagLengthInput"
+                type="number"
+                inputmode="decimal"
+                step="0.1"
+                min="0.1"
+                class="w-24 h-9 px-2 rounded bg-ink-700 text-cream text-[15px] tabular-nums
+                       border border-ink-600 focus:outline-none focus:border-flag-dim"
+                aria-label="Trim length in seconds"
+              />
+              <span class="text-[12px] text-flag-dim">seconds</span>
             </div>
 
             <button
