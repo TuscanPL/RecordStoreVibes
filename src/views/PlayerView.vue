@@ -2,14 +2,22 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { provider } from '../providers'
-import type { Record as CrateRecord } from '../providers/types'
+import type { Record as CrateRecord, Marker } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { useAudio, formatTime } from '../composables/useAudio'
+import {
+  useWaveform,
+  waveformTier,
+  estimateBytes,
+  formatBytes,
+} from '../composables/useWaveform'
+import Waveform from '../components/Waveform.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
 const library = useLibrary()
 const audio = useAudio()
+const wave = useWaveform()
 
 const record = ref<CrateRecord | null>(null)
 const loading = ref(true)
@@ -18,6 +26,9 @@ const trackIndex = ref(0)
 const justFlagged = ref<string | null>(null)
 const scrubbing = ref(false)
 const scrubValue = ref(0)
+const showMarkers = ref(false)
+/** Set when jumping to a marker on a track that has to load first. */
+const pendingSeek = ref<number | null>(null)
 
 const track = computed(() => record.value?.tracks[trackIndex.value] ?? null)
 const starred = computed(() => (record.value ? library.isStarred(record.value.id) : false))
@@ -27,6 +38,47 @@ const trackMarkers = computed(() => {
   if (!record.value || !track.value) return []
   return library.markersFor(record.value.id, track.value.name)
 })
+
+/** Everything flagged on this record, for the panel. */
+const recordMarkers = computed(() => {
+  if (!record.value) return []
+  const order = new Map(record.value.tracks.map((t, i) => [t.name, i]))
+  return [...library.markersFor(record.value.id)].sort((a, b) => {
+    const ta = order.get(a.trackName) ?? 0
+    const tb = order.get(b.trackName) ?? 0
+    return ta === tb ? a.timestampSec - b.timestampSec : ta - tb
+  })
+})
+
+/** Track number for a marker, so the panel can show where it sits. */
+function trackNoFor(m: Marker): number | null {
+  const i = record.value?.tracks.findIndex(t => t.name === m.trackName) ?? -1
+  return i < 0 ? null : i + 1
+}
+
+const tier = computed(() => waveformTier(total.value))
+const showWaveButton = computed(
+  () => !wave.peaks.value && !wave.loading.value && tier.value !== 'too-long',
+)
+const waveCost = computed(() => formatBytes(estimateBytes(total.value)))
+
+/** Marker positions as percentages, for the waveform overlay. */
+const markerPercents = computed(() =>
+  total.value > 0
+    ? trackMarkers.value.map(m => (m.timestampSec / total.value) * 100)
+    : [],
+)
+
+function loadWave() {
+  if (track.value) void wave.load(track.value.streamUrl)
+}
+
+// A different file means a different waveform. Cached ones come back free.
+watch(
+  () => track.value?.streamUrl ?? null,
+  url => wave.reset(url),
+  { immediate: true },
+)
 
 const total = computed(() => audio.effectiveDuration.value)
 const displayPos = computed(() => (scrubbing.value ? scrubValue.value : audio.position.value))
@@ -98,6 +150,29 @@ function flag() {
   }, 1600)
 }
 
+/** Jump back to something already flagged, switching track if needed. */
+async function jumpTo(m: Marker) {
+  const i = record.value?.tracks.findIndex(t => t.name === m.trackName) ?? -1
+  if (i < 0) return
+  if (i === trackIndex.value && isCurrent.value) {
+    audio.seek(m.timestampSec)
+    return
+  }
+  pendingSeek.value = m.timestampSec
+  await openTrack(i)
+}
+
+// A freshly loaded track has no seekable range until metadata lands.
+watch(
+  () => audio.duration.value,
+  d => {
+    if (d > 0 && pendingSeek.value !== null) {
+      audio.seek(pendingSeek.value)
+      pendingSeek.value = null
+    }
+  },
+)
+
 // Re-flagging the same spot twice should still read as a fresh confirmation.
 watch(trackIndex, () => {
   justFlagged.value = null
@@ -145,28 +220,89 @@ watch(trackIndex, () => {
     <p v-else-if="loading" class="px-6 py-10 text-center text-[13px] text-flag-dim">Loading…</p>
 
     <template v-else-if="record">
-      <!-- Upper area: look, don't touch. -->
-      <div class="flex-1 min-h-0 flex flex-col items-center justify-center px-6 gap-4">
-        <div
-          class="w-full max-w-[min(58vw,300px)] aspect-square rounded-lg overflow-hidden
-                 bg-ink-700 shadow-2xl shadow-black/60"
-        >
-          <img
-            v-if="record.artworkUrl"
-            :src="record.artworkUrl"
-            alt=""
-            class="w-full h-full object-cover"
-            @error="($event.target as HTMLImageElement).style.visibility = 'hidden'"
-          />
+      <!-- Scrolls, so the panel can grow without pushing the controls off. -->
+      <div class="flex-1 min-h-0 scroll-y">
+        <div class="flex flex-col items-center px-6 pt-3 gap-3">
+          <div
+            class="w-full max-w-[min(52vw,260px)] aspect-square rounded-lg overflow-hidden
+                   bg-ink-700 shadow-2xl shadow-black/60"
+          >
+            <img
+              v-if="record.artworkUrl"
+              :src="record.artworkUrl"
+              alt=""
+              class="w-full h-full object-cover"
+              @error="($event.target as HTMLImageElement).style.visibility = 'hidden'"
+            />
+          </div>
+
+          <p class="text-[13px] text-cream text-center line-clamp-2 px-2">
+            {{ track?.title ?? '' }}
+          </p>
         </div>
 
-        <p class="text-[13px] text-cream text-center line-clamp-2 px-2">
-          {{ track?.title ?? '' }}
-        </p>
+        <!-- Flagged spots on this record — same shape as the Flagged screen. -->
+        <div v-if="recordMarkers.length" class="mt-4 border-t border-ink-700">
+          <button
+            class="w-full flex items-center justify-between px-4 py-3 text-left active:bg-ink-700"
+            @click="showMarkers = !showMarkers"
+          >
+            <span class="text-[12px] uppercase tracking-wider text-flag">
+              Flagged · {{ recordMarkers.length }}
+            </span>
+            <svg
+              class="w-5 h-5 text-ink-500 transition-transform"
+              :class="showMarkers ? 'rotate-180' : ''"
+              fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"
+            >
+              <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
 
-        <p v-if="trackMarkers.length" class="text-[11px] text-flag">
-          {{ trackMarkers.length }} flagged on this track
-        </p>
+          <div v-if="showMarkers" class="pb-2 bg-ink-800/60">
+            <div
+              v-for="m in recordMarkers"
+              :key="m.id"
+              class="flex items-center gap-2 px-3 py-2 border-t border-ink-700/40"
+            >
+              <button
+                class="flex-none h-9 px-2 rounded text-[13px] tabular-nums text-flag
+                       active:bg-ink-700 text-left"
+                :aria-label="`Jump to ${formatTime(m.timestampSec)}`"
+                @click="jumpTo(m)"
+              >
+                <span
+                  v-if="record.tracks.length > 1 && trackNoFor(m)"
+                  class="text-ink-500 text-[11px] mr-1"
+                >
+                  {{ trackNoFor(m) }}·
+                </span>
+                {{ formatTime(m.timestampSec) }}
+              </button>
+
+              <input
+                :value="m.note ?? ''"
+                placeholder="note…"
+                class="flex-1 min-w-0 h-9 px-2 rounded bg-ink-700 text-[13px] text-cream
+                       placeholder:text-ink-500 border border-ink-600
+                       focus:outline-none focus:border-flag-dim"
+                @change="library.setNote(m.id, ($event.target as HTMLInputElement).value)"
+              />
+
+              <button
+                class="w-9 h-9 flex-none flex items-center justify-center text-ink-500 active:text-red-300"
+                aria-label="Remove flag"
+                @click="library.removeMarker(m.id)"
+              >
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+                  <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="h-2" />
       </div>
 
       <!-- Track picker, only when the item actually has several files. -->
@@ -191,19 +327,18 @@ watch(trackIndex, () => {
 
       <!-- Bottom third: all controls. -->
       <div class="flex-none px-5 pt-3 pb-safe bg-ink-800 border-t border-ink-700">
-        <div class="relative h-6 flex items-center">
-          <div class="absolute inset-x-0 h-1.5 rounded-full bg-ink-600" />
-          <div
-            class="absolute left-0 h-1.5 rounded-full bg-flag-dim"
-            :style="{ width: `${pct}%` }"
-          />
-          <!-- Flagged spots, so you can see what you've already caught. -->
-          <div
-            v-for="m in trackMarkers"
-            :key="m.id"
-            class="absolute w-0.5 h-3.5 bg-flag rounded-full pointer-events-none"
-            :style="{ left: `${total > 0 ? (m.timestampSec / total) * 100 : 0}%` }"
-          />
+        <!-- Waveform when loaded, flat bar when not — same scrub surface. -->
+        <div
+          class="relative flex items-center transition-all duration-300"
+          :class="wave.peaks.value ? 'h-14' : 'h-6'"
+        >
+          <div class="absolute inset-0">
+            <Waveform
+              :peaks="wave.peaks.value"
+              :progress="pct"
+              :markers="markerPercents"
+            />
+          </div>
           <input
             type="range"
             min="0"
@@ -220,8 +355,30 @@ watch(trackIndex, () => {
           />
         </div>
 
-        <div class="flex justify-between text-[11px] text-flag-dim tabular-nums mt-1">
+        <div class="flex justify-between items-center text-[11px] text-flag-dim tabular-nums mt-1">
           <span>{{ formatTime(displayPos) }}</span>
+
+          <!-- Opt-in, and honest about what it costs before you tap it. -->
+          <button
+            v-if="showWaveButton"
+            class="px-2 h-6 rounded border border-ink-500 text-[10px] tracking-wide
+                   text-flag-soft active:bg-ink-700"
+            @click="loadWave"
+          >
+            WAVEFORM<span v-if="tier === 'offered'" class="text-ink-500"> ~{{ waveCost }}</span>
+          </button>
+
+          <span v-else-if="wave.loading.value" class="text-[10px] text-flag-soft">
+            <template v-if="wave.progress.value !== null">
+              {{ Math.round(wave.progress.value * 100) }}%
+            </template>
+            <template v-else>decoding…</template>
+          </span>
+
+          <span v-else-if="wave.error.value" class="text-[10px] text-red-300/70">
+            no waveform
+          </span>
+
           <span>{{ total ? formatTime(total) : '--:--' }}</span>
         </div>
 
@@ -287,8 +444,10 @@ watch(trackIndex, () => {
 <style scoped>
 /* Invisible native range on top of the drawn track — native touch dragging
    without fighting the browser's own thumb rendering. */
+/* Fills whatever height the container is, so you can drag anywhere on the
+   waveform rather than only on a thin strip. */
 .scrub {
-  height: 24px;
+  height: 100%;
 }
 .scrub::-webkit-slider-thumb {
   -webkit-appearance: none;
