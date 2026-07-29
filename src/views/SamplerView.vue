@@ -18,31 +18,46 @@ const audio = useAudio()
 const record = ref<CrateRecord | null>(null)
 const loadError = ref<string | null>(null)
 
-/** The pad being worked on. Dragging the waveform writes into this one. */
-const activePad = ref(0)
+interface Range {
+  startSec: number
+  endSec: number
+}
+
+/**
+ * The working range, and deliberately not a pad.
+ *
+ * It's the span lazy chop cuts within, and the thing a flag sets. Pads are
+ * only ever made from it — copied, never the same object — so chopping can
+ * rebuild the bank without destroying the range that produced it.
+ */
+const trim = ref<Range | null>(null)
+
+/** Pad under the finger, for playback highlight and pitch editing. */
+const activePad = ref<number | null>(null)
 
 const trackName = computed(() => decodeURIComponent(props.track))
 const key = computed(() => padKey(props.id, trackName.value))
 const bank = computed(() => library.padsFor(key.value))
 const total = computed(() => sampler.buffer.value?.duration ?? 0)
-const current = computed<Pad | null>(() => bank.value[activePad.value] ?? null)
+const currentPad = computed<Pad | null>(() =>
+  activePad.value === null ? null : (bank.value[activePad.value] ?? null),
+)
 
 const trackMeta = computed(
   () => record.value?.tracks.find(t => t.name === trackName.value) ?? null,
 )
 
+const MIN_LEN = 0.05
+
 /* ---- zoom ---- */
 
-/** Seconds of context shown either side, as a share of the region. */
 const ZOOM_PAD = 0.15
-
 const zoomed = ref(false)
 
-/** What zoom frames: the range being chopped, else the current chop. */
-const zoomAnchor = computed<{ start: number; end: number } | null>(() => {
-  if (lazy.value) return lazyRange.value
-  const cur = current.value
-  return cur ? { start: cur.startSec, end: cur.endSec } : null
+/** Zoom frames whatever is being worked on: the chop range, else the trim. */
+const zoomAnchor = computed<Range | null>(() => {
+  if (lazy.value) return { startSec: lazyRange.value.start, endSec: lazyRange.value.end }
+  return trim.value
 })
 
 /**
@@ -52,15 +67,14 @@ const zoomAnchor = computed<{ start: number; end: number } | null>(() => {
 const view = computed(() => {
   const a = zoomAnchor.value
   if (!zoomed.value || !a || total.value <= 0) return { start: 0, end: total.value }
-  const pad = Math.max(0.2, (a.end - a.start) * ZOOM_PAD)
+  const pad = Math.max(0.2, (a.endSec - a.startSec) * ZOOM_PAD)
   return {
-    start: Math.max(0, a.start - pad),
-    end: Math.min(total.value, a.end + pad),
+    start: Math.max(0, a.startSec - pad),
+    end: Math.min(total.value, a.endSec + pad),
   }
 })
 
 const canZoom = computed(() => zoomAnchor.value !== null)
-
 const degraded = computed(() => sampler.rate.value > 0 && sampler.rate.value < 44100)
 
 onMounted(async () => {
@@ -90,19 +104,17 @@ onBeforeUnmount(() => sampler.release())
 /* ---- the strip ---- */
 
 const strip = ref<HTMLElement | null>(null)
-/** null = not dragging, 'new' = fresh region, 'start'/'end' = trimming an edge. */
 let mode: 'new' | 'start' | 'end' | null = null
 let anchor = 0
 
 const EDGE_GRAB_PX = 18
-const MIN_LEN = 0.05
 
 /**
  * The view is frozen for the duration of a drag.
  *
- * Zoom frames the chop being edited, so without this the first pointermove
- * rewrites the chop, the window collapses onto the new tiny region, and the
- * rest of the drag maps against a scale that's shrinking under your finger.
+ * Zoom frames the trim, so without this the first pointermove rewrites the
+ * trim, the window collapses onto the new tiny range, and the rest of the
+ * drag maps against a scale that's shrinking under your finger.
  */
 const dragView = ref<{ start: number; end: number } | null>(null)
 
@@ -126,21 +138,14 @@ function pxPerSec(): number {
   return el.getBoundingClientRect().width / Math.max(1e-6, v.end - v.start)
 }
 
-function writePad(pad: Pad) {
-  library.setPad(key.value, activePad.value, pad)
-  // Pads are a reason to keep the metadata: without this the store's gc
-  // drops records that were only ever chopped, never flagged or starred.
-  if (record.value) library.remember(record.value)
-}
-
 function onDown(e: PointerEvent) {
   if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   dragView.value = { ...view.value }
   const t = timeAt(e)
 
-  // Near an edge of the current chop? Trim it instead of starting a new one.
-  const cur = current.value
+  // Near an edge of the trim? Adjust it rather than starting a new range.
+  const cur = trim.value
   if (cur) {
     const scale = pxPerSec()
     if (Math.abs(t - cur.startSec) * scale < EDGE_GRAB_PX) {
@@ -155,25 +160,23 @@ function onDown(e: PointerEvent) {
 
   mode = 'new'
   anchor = t
-  writePad({ startSec: t, endSec: t + MIN_LEN, pitch: cur?.pitch ?? 0 })
+  trim.value = { startSec: t, endSec: t + MIN_LEN }
 }
 
 function onMove(e: PointerEvent) {
-  if (!mode) return
+  if (!mode || !trim.value) return
   const t = timeAt(e)
-  const cur = current.value
-  if (!cur) return
+  const cur = trim.value
 
   if (mode === 'new') {
-    writePad({
-      ...cur,
+    trim.value = {
       startSec: Math.min(anchor, t),
       endSec: Math.max(anchor + MIN_LEN, Math.max(anchor, t)),
-    })
+    }
   } else if (mode === 'start') {
-    writePad({ ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) })
+    trim.value = { ...cur, startSec: Math.min(t, cur.endSec - MIN_LEN) }
   } else {
-    writePad({ ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) })
+    trim.value = { ...cur, endSec: Math.max(t, cur.startSec + MIN_LEN) }
   }
 }
 
@@ -186,24 +189,46 @@ function onUp(e: PointerEvent) {
   } catch {
     // capture already gone
   }
-  if (current.value) sampler.play(current.value, activePad.value)
+  playTrim()
 }
 
-/* ---- trim / pitch ---- */
+/* ---- trim controls ---- */
 
 function nudge(edge: 'startSec' | 'endSec', delta: number) {
-  const cur = current.value
+  const cur = trim.value
   if (!cur) return
   const next = { ...cur }
   next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
   if (next.endSec - next.startSec < MIN_LEN) return
-  writePad(next)
+  trim.value = next
 }
 
-function setPitch(semitones: number) {
-  const cur = current.value
+function playTrim() {
+  const cur = trim.value
   if (!cur) return
-  writePad({ ...cur, pitch: Math.max(-12, Math.min(12, semitones)) })
+  sampler.play({ ...cur, pitch: 0 }, null)
+}
+
+/** The tail of the trim, for hearing where the out point lands. */
+const ROLL_SEC = 3
+
+function roll() {
+  const cur = trim.value
+  if (!cur) return
+  sampler.play(
+    { startSec: Math.max(cur.startSec, cur.endSec - ROLL_SEC), endSec: cur.endSec, pitch: 0 },
+    null,
+  )
+}
+
+/** Pitch belongs to the pad, not the trim — it's a property of the sample. */
+function setPitch(semitones: number) {
+  const cur = currentPad.value
+  if (activePad.value === null || !cur) return
+  library.setPad(key.value, activePad.value, {
+    ...cur,
+    pitch: Math.max(-12, Math.min(12, semitones)),
+  })
 }
 
 /* ---- flags ---- */
@@ -223,20 +248,13 @@ const flagPercents = computed(() =>
   total.value > 0 ? trackFlags.value.map(m => (m.timestampSec / total.value) * 100) : [],
 )
 
-/**
- * Turn a flag into the current pad's trim: it starts where you flagged and
- * runs for the chosen length. Everything after that is ordinary trimming.
- */
+/** A flag sets the range and nothing else. No pad is touched. */
 function useFlag(atSec: number) {
   if (total.value <= 0) return
   const start = Math.max(0, Math.min(atSec, total.value - MIN_LEN))
-  writePad({
-    startSec: start,
-    endSec: Math.min(total.value, start + flagLength.value),
-    pitch: current.value?.pitch ?? 0,
-  })
+  trim.value = { startSec: start, endSec: Math.min(total.value, start + flagLength.value) }
   zoomed.value = true
-  if (current.value) sampler.play(current.value, activePad.value)
+  playTrim()
 }
 
 /* ---- pads ---- */
@@ -247,29 +265,38 @@ function hitPad(i: number) {
     lazyCut()
     return
   }
+
   const existing = bank.value[i]
   activePad.value = i
-  if (existing) sampler.play(existing, i)
+
+  if (existing) {
+    sampler.play(existing, i)
+  } else if (trim.value) {
+    // A copy of the range, not the range itself.
+    const pad: Pad = { ...trim.value, pitch: 0 }
+    library.setPad(key.value, i, pad)
+    if (record.value) library.remember(record.value)
+    sampler.play(pad, i)
+  }
 }
 
 function clearPad(i: number) {
   library.setPad(key.value, i, null)
+  if (activePad.value === i) activePad.value = null
 }
 
 /* ---- lazy chop ---- */
 
 /**
- * Lazy chopping: the trimmed range plays through and every pad tap cuts at
- * the playhead. The first chop starts at the trim's start whether you tap
- * or not, each tap closes one chop and opens the next, and the last runs to
+ * Lazy chopping: the trim plays through and every pad tap cuts at the
+ * playhead. The first chop starts at the trim's start whether you tap or
+ * not, each tap closes one chop and opens the next, and the last runs to
  * the trim's end — so N taps give N+1 chops filling pads in order.
  *
- * Not the same as evenly spaced auto-slicing; the point is that the cuts
- * land where you heard them, not on a grid.
+ * Not evenly spaced slicing; the cuts land where you heard them.
  */
 const lazy = ref(false)
 const lazyRange = ref({ start: 0, end: 0 })
-/** Cut points so far. Always begins with the range start. */
 const lazyBounds = ref<number[]>([])
 const lazyNextPad = ref(0)
 
@@ -280,20 +307,18 @@ function startLazyChop() {
     endLazyChop()
     return
   }
-  const cur = current.value
-  const start = cur ? cur.startSec : 0
-  const end = cur ? cur.endSec : total.value
-  if (end - start < MIN_CHOP * 2) return
+  const cur = trim.value
+  if (!cur || cur.endSec - cur.startSec < MIN_CHOP * 2) return
 
-  // Captured before clearing: the range lives in a pad we're about to wipe.
-  lazyRange.value = { start, end }
-  lazyBounds.value = [start]
+  lazyRange.value = { start: cur.startSec, end: cur.endSec }
+  lazyBounds.value = [cur.startSec]
   lazyNextPad.value = 0
   for (let i = 0; i < PAD_COUNT; i++) library.setPad(key.value, i, null)
+  activePad.value = null
 
   lazy.value = true
   zoomed.value = true
-  sampler.play({ startSec: start, endSec: end, pitch: 0 }, null, endLazyChop)
+  sampler.play({ startSec: cur.startSec, endSec: cur.endSec, pitch: 0 }, null, endLazyChop)
 }
 
 /** One tap: close the open chop at the playhead, open the next. */
@@ -304,10 +329,10 @@ function lazyCut() {
   if (lazyNextPad.value >= PAD_COUNT) return
 
   library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: t, pitch: 0 })
+  if (record.value) library.remember(record.value)
   lazyNextPad.value++
   lazyBounds.value.push(t)
 
-  // Bank full — nothing left to cut into.
   if (lazyNextPad.value >= PAD_COUNT) endLazyChop()
 }
 
@@ -320,42 +345,26 @@ function endLazyChop() {
   // The final chop always runs to the end of the trim.
   if (lazyNextPad.value < PAD_COUNT && end - last >= MIN_CHOP) {
     library.setPad(key.value, lazyNextPad.value, { startSec: last, endSec: end, pitch: 0 })
+    if (record.value) library.remember(record.value)
     lazyNextPad.value++
   }
   sampler.stop()
-  activePad.value = 0
 }
 
-/** Position within the visible slice, not the whole track. */
+/* ---- geometry ---- */
+
 function pct(sec: number): number {
   const v = activeView()
   return ((sec - v.start) / Math.max(1e-6, v.end - v.start)) * 100
 }
 
-/** True when a region overlaps what's on screen at all. */
 function inView(a: number, b: number): boolean {
   const v = activeView()
   return b > v.start && a < v.end
 }
 
-/** Plays the tail of the trim, for checking where the out point lands. */
-const ROLL_SEC = 3
-
-function roll() {
-  const cur = current.value
-  if (!cur) return
-  sampler.play(
-    {
-      startSec: Math.max(cur.startSec, cur.endSec - ROLL_SEC),
-      endSec: cur.endSec,
-      pitch: cur.pitch,
-    },
-    activePad.value,
-  )
-}
-
-const lengthSec = computed(() =>
-  current.value ? current.value.endSec - current.value.startSec : 0,
+const trimLength = computed(() =>
+  trim.value ? trim.value.endSec - trim.value.startSec : 0,
 )
 </script>
 
@@ -426,8 +435,6 @@ const lengthSec = computed(() =>
             />
           </div>
 
-          <!-- View toggle sits on the strip: it's about what you're looking
-               at, and costs no vertical space there. -->
           <button
             v-if="canZoom"
             class="absolute top-1 right-1 z-10 px-2 h-6 rounded border text-[9px] tracking-wide"
@@ -439,22 +446,15 @@ const lengthSec = computed(() =>
             {{ zoomed ? 'TRIM' : 'ALL' }}
           </button>
 
-          <!-- Every assigned chop, so the whole layout is visible at once.
-               v-if lives on an inner element: v-show would still evaluate the
-               style bindings for empty pads, and v-if on the v-for element
-               itself runs before the loop variable exists. -->
+          <!-- Chops already assigned, drawn under the trim. -->
           <template v-for="(p, i) in bank" :key="i">
             <div
               v-if="p && inView(p.startSec, p.endSec)"
               class="absolute inset-y-0 pointer-events-none border-l"
-              :class="[
-                sampler.playing.value === i
-                  ? 'bg-flag/45 border-cream'
-                  : i === activePad
-                    ? 'bg-flag/25 border-flag'
-                    : 'bg-flag/10 border-flag/40',
-              ]"
-              :style="{ left: `${pct(p.startSec)}%`, width: `${pct(p.endSec - p.startSec)}%` }"
+              :class="sampler.playing.value === i
+                ? 'bg-flag/45 border-cream'
+                : 'bg-flag/10 border-flag/40'"
+              :style="{ left: `${pct(p.startSec)}%`, width: `${pct(p.endSec) - pct(p.startSec)}%` }"
             >
               <span class="absolute top-0.5 left-1 text-[9px] tabular-nums text-cream/80">
                 {{ i + 1 }}
@@ -462,22 +462,20 @@ const lengthSec = computed(() =>
             </div>
           </template>
 
-          <!-- Trim handles on the active chop. -->
-          <template v-if="current">
+          <!-- The trim: the range chopping works inside. -->
+          <template v-if="trim">
             <div
-              class="absolute inset-y-0 w-1 bg-cream pointer-events-none"
-              :style="{ left: `${pct(current.startSec)}%` }"
-            />
-            <div
-              class="absolute inset-y-0 w-1 bg-cream pointer-events-none"
-              :style="{ left: `calc(${pct(current.endSec)}% - 4px)` }"
+              class="absolute inset-y-0 bg-cream/10 border-x-2 border-cream pointer-events-none"
+              :style="{
+                left: `${pct(trim.startSec)}%`,
+                width: `${pct(trim.endSec) - pct(trim.startSec)}%`,
+              }"
             />
           </template>
 
-          <!-- Live playhead: what the cuts are made against. -->
           <div
             v-if="sampler.playing.value !== null || lazy"
-            class="absolute inset-y-0 w-0.5 bg-cream pointer-events-none"
+            class="absolute inset-y-0 w-0.5 bg-flag pointer-events-none"
             :style="{ left: `${pct(sampler.playhead.value)}%` }"
           />
 
@@ -504,21 +502,21 @@ const lengthSec = computed(() =>
           v-if="!lazy"
           class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
         >
-          <span>{{ current ? formatTime(current.startSec) : '—' }}</span>
-          <span class="text-flag">
-            Pad {{ activePad + 1 }} · {{ lengthSec.toFixed(2) }}s
+          <span>{{ trim ? formatTime(trim.startSec) : '—' }}</span>
+          <span class="text-cream">
+            <template v-if="trim">Trim · {{ trimLength.toFixed(2) }}s</template>
+            <template v-else>Drag the waveform, or tap a flag</template>
           </span>
-          <span>{{ current ? formatTime(current.endSec) : '—' }}</span>
+          <span>{{ trim ? formatTime(trim.endSec) : '—' }}</span>
         </div>
 
-        <!-- Trim -->
         <div v-if="!lazy" class="flex items-center gap-1.5 mt-2">
           <span class="text-[10px] text-ink-500 w-4">IN</span>
-          <button class="trim" :disabled="!current" @click="nudge('startSec', -0.1)">−</button>
-          <button class="trim" :disabled="!current" @click="nudge('startSec', 0.1)">+</button>
+          <button class="trim" :disabled="!trim" @click="nudge('startSec', -0.1)">−</button>
+          <button class="trim" :disabled="!trim" @click="nudge('startSec', 0.1)">+</button>
           <span class="flex-1" />
-          <button class="trim" :disabled="!current" @click="nudge('endSec', -0.1)">−</button>
-          <button class="trim" :disabled="!current" @click="nudge('endSec', 0.1)">+</button>
+          <button class="trim" :disabled="!trim" @click="nudge('endSec', -0.1)">−</button>
+          <button class="trim" :disabled="!trim" @click="nudge('endSec', 0.1)">+</button>
           <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
         </div>
 
@@ -526,25 +524,23 @@ const lengthSec = computed(() =>
           <button
             class="flex-1 h-10 rounded-lg bg-ink-600 text-cream text-[13px]
                    active:bg-ink-500 disabled:opacity-40"
-            :disabled="!current"
-            @click="current && sampler.play(current, activePad)"
+            :disabled="!trim"
+            @click="playTrim"
           >
             Play
           </button>
-          <!-- The tail of the trim, for hearing where the out point lands. -->
           <button
             class="flex-1 h-10 rounded-lg border border-ink-500 text-flag-soft text-[13px]
                    active:bg-ink-700 disabled:opacity-40"
-            :disabled="!current"
+            :disabled="!trim"
             @click="roll"
           >
             Roll
           </button>
           <button
-            class="px-3 h-10 rounded-lg border text-[11px] tracking-wide active:bg-ink-700
-                   disabled:opacity-40"
-            :class="lazy ? 'border-flag text-flag' : 'border-ink-500 text-flag-soft'"
-            :disabled="!current"
+            class="px-3 h-10 rounded-lg border border-ink-500 text-flag-soft text-[11px]
+                   tracking-wide active:bg-ink-700 disabled:opacity-40"
+            :disabled="!trim"
             title="Play the trim and cut on the fly"
             @click="startLazyChop"
           >
@@ -552,7 +548,7 @@ const lengthSec = computed(() =>
           </button>
         </div>
 
-        <!-- Pitch: varispeed, so it shifts length too. -->
+        <!-- Pitch is the selected pad's, not the trim's. -->
         <div v-if="!lazy" class="flex items-center gap-2 mt-2">
           <span class="text-[10px] text-ink-500 w-9">PITCH</span>
           <input
@@ -560,21 +556,23 @@ const lengthSec = computed(() =>
             min="-12"
             max="12"
             step="1"
-            :value="current?.pitch ?? 0"
-            :disabled="!current"
+            :value="currentPad?.pitch ?? 0"
+            :disabled="!currentPad"
             class="flex-1 accent-[#d99a4e] disabled:opacity-40"
             aria-label="Pitch in semitones"
             @input="setPitch(Number(($event.target as HTMLInputElement).value))"
           />
-          <span class="w-8 text-right text-[12px] tabular-nums text-flag">
-            {{ (current?.pitch ?? 0) > 0 ? '+' : '' }}{{ current?.pitch ?? 0 }}
+          <span class="w-16 text-right text-[11px] tabular-nums text-flag">
+            <template v-if="currentPad">
+              pad {{ activePad! + 1 }} {{ currentPad.pitch > 0 ? '+' : '' }}{{ currentPad.pitch }}
+            </template>
+            <template v-else>—</template>
           </span>
         </div>
       </div>
 
-      <!-- Pads: square, so the controls above keep their room. -->
       <div class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto">
-        <!-- Flags for this track, turned into trims on the active pad. -->
+        <!-- Flags for this track. Tapping one sets the range, nothing else. -->
         <div v-if="!lazy && trackFlags.length" class="mb-3 rounded-lg border border-ink-600">
           <button
             class="w-full flex items-center justify-between px-3 py-2 text-left"
@@ -621,7 +619,7 @@ const lengthSec = computed(() =>
               <span class="flex-1 min-w-0 truncate text-[12px] text-flag-dim">
                 {{ m.note || 'flagged' }}
               </span>
-              <span class="text-[10px] text-ink-500">→ pad {{ activePad + 1 }}</span>
+              <span class="text-[10px] text-ink-500">→ trim</span>
             </button>
           </div>
         </div>
@@ -662,7 +660,7 @@ const lengthSec = computed(() =>
         </div>
 
         <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
-          Tap a pad, then drag the waveform to chop it. Drag an edge to trim.
+          Set a trim, then CHOP it. An empty pad takes a copy of the trim.
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
