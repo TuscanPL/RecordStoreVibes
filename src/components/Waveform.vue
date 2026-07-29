@@ -39,13 +39,28 @@ const HEAD_EDGE = 'rgba(14, 12, 10, 0.85)'
 
 function draw() {
   const el = canvas.value
-  if (!el) return
+  const host = el?.parentElement
+  if (!el || !host) return
 
-  const dpr = window.devicePixelRatio || 1
-  const w = el.clientWidth
-  const h = el.clientHeight
+  /*
+   * Sized from the parent's measured box in explicit pixels, never with a
+   * percentage height.
+   *
+   * A canvas has an intrinsic 300x150 size, so any failure to resolve
+   * height:100% silently leaves it at 150px tall — and since it sits in an
+   * absolutely positioned wrapper, it then paints over everything below
+   * instead of pushing it down. Measuring the parent also means the canvas
+   * can never feed back into its own size via the ResizeObserver.
+   */
+  const rect = host.getBoundingClientRect()
+  const w = Math.round(rect.width)
+  const h = Math.round(rect.height)
   if (w === 0 || h === 0) return
 
+  el.style.width = `${w}px`
+  el.style.height = `${h}px`
+
+  const dpr = window.devicePixelRatio || 1
   if (el.width !== w * dpr || el.height !== h * dpr) {
     el.width = w * dpr
     el.height = h * dpr
@@ -113,9 +128,12 @@ watch(() => [props.peaks, props.progress, props.markers, props.rangeStart, props
 
 onMounted(() => {
   draw()
-  if ('ResizeObserver' in window && canvas.value) {
+  const host = canvas.value?.parentElement
+  if ('ResizeObserver' in window && host) {
+    // The parent, not the canvas — observing the canvas while also resizing
+    // it is how you get a runaway growth loop.
     observer = new ResizeObserver(draw)
-    observer.observe(canvas.value)
+    observer.observe(host)
   }
 })
 
@@ -123,5 +141,5 @@ onBeforeUnmount(() => observer?.disconnect())
 </script>
 
 <template>
-  <canvas ref="canvas" class="w-full h-full block" />
+  <canvas ref="canvas" class="block" />
 </template>

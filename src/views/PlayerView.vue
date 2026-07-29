@@ -405,7 +405,9 @@ watch(trackIndex, () => {
           @pointercancel="onScrubUp"
           @keydown="onScrubKey"
         >
-          <div class="absolute inset-0">
+          <!-- overflow-hidden here, not on the bar: the magnifier is a
+               sibling and has to overflow upward. -->
+          <div class="absolute inset-0 overflow-hidden">
             <Waveform :peaks="wave.peaks.value" :progress="pct" :markers="markerPercents" />
           </div>
 
