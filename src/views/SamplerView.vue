@@ -5,7 +5,9 @@ import { provider } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { PAD_COUNT, padKey, type Pad } from '../stores/storage'
-import { useSampler } from '../composables/useSampler'
+import { useSampler, semitonesToRate } from '../composables/useSampler'
+import { makeZip, type ZipEntry } from '../lib/zip'
+import { encodeWav } from '../lib/wav'
 import { useAudio, formatTime } from '../composables/useAudio'
 import Waveform from '../components/Waveform.vue'
 
@@ -384,6 +386,138 @@ function endLazyChop() {
   sampler.stop()
 }
 
+/* ---- export ---- */
+
+const exporting = ref(false)
+const exportNote = ref<string | null>(null)
+
+function safeName(text: string): string {
+  return text.replace(/[^a-z0-9-_]+/gi, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')
+}
+
+const exportable = computed(
+  () => !!trim.value || bank.value.some(p => p !== null),
+)
+
+/**
+ * Everything cut from this track, as WAVs in a zip with a manifest.
+ *
+ * Pads export with their pitch applied, because that's the sound that was
+ * auditioned. The manifest keeps the untouched timestamps and the source
+ * URL, so anything can be re-cut at full fidelity from the original.
+ */
+async function exportChops() {
+  const buf = sampler.buffer.value
+  if (!buf || exporting.value) return
+
+  exporting.value = true
+  exportNote.value = null
+
+  try {
+    // Yield once so the button paints its busy state before the encode.
+    await new Promise(r => setTimeout(r, 0))
+
+    const entries: ZipEntry[] = []
+    const manifestPads: unknown[] = []
+
+    if (trim.value) {
+      entries.push({
+        name: 'trim.wav',
+        data: encodeWav(buf, trim.value.startSec, trim.value.endSec),
+      })
+    }
+
+    bank.value.forEach((pad, i) => {
+      if (!pad) return
+      const name = `pad-${String(i + 1).padStart(2, '0')}.wav`
+      entries.push({
+        name,
+        data: encodeWav(buf, pad.startSec, pad.endSec, semitonesToRate(pad.pitch)),
+      })
+      manifestPads.push({
+        pad: i + 1,
+        file: name,
+        startSec: Number(pad.startSec.toFixed(3)),
+        endSec: Number(pad.endSec.toFixed(3)),
+        pitchSemitones: pad.pitch,
+        pitchApplied: pad.pitch !== 0,
+      })
+    })
+
+    const manifest = {
+      generatedAt: new Date().toISOString(),
+      source: {
+        identifier: props.id,
+        title: record.value?.title ?? props.id,
+        creator: record.value?.creator ?? 'Unknown',
+        track: trackName.value,
+        details: record.value?.sourceUrl,
+        download: `https://archive.org/download/${props.id}/${encodeURIComponent(trackName.value)}`,
+      },
+      audio: {
+        sampleRate: buf.sampleRate,
+        channels: buf.numberOfChannels,
+        bitDepth: 16,
+        note:
+          buf.sampleRate < 44100
+            ? `Cut from a ${(buf.sampleRate / 1000).toFixed(1)}kHz decode, which is how a track this long fits in memory. Re-cut from the download URL for full fidelity.`
+            : 'Cut at the source rate.',
+      },
+      trim: trim.value
+        ? {
+            file: 'trim.wav',
+            startSec: Number(trim.value.startSec.toFixed(3)),
+            endSec: Number(trim.value.endSec.toFixed(3)),
+          }
+        : null,
+      pads: manifestPads,
+    }
+
+    entries.push({
+      name: 'manifest.json',
+      data: new TextEncoder().encode(JSON.stringify(manifest, null, 2)),
+    })
+
+    const filename = `crate-${safeName(props.id)}-${safeName(trackName.value)}.zip`
+    const blob = makeZip(entries)
+
+    // The native share sheet is both requirements at once: Save to Files
+    // and Mail sit side by side in it.
+    const file = new File([blob], filename, { type: 'application/zip' })
+    const canShare =
+      typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })
+
+    if (canShare) {
+      try {
+        await navigator.share({ files: [file], title: filename })
+        exportNote.value = `${entries.length} files shared`
+        return
+      } catch (err) {
+        // Dismissing the sheet is not a failure worth shouting about.
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          exportNote.value = null
+          return
+        }
+      }
+    }
+
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+    exportNote.value = `${entries.length} files downloaded`
+  } catch {
+    exportNote.value = "Couldn't build the export."
+  } finally {
+    exporting.value = false
+    setTimeout(() => (exportNote.value = null), 4000)
+  }
+}
+
 /* ---- geometry ---- */
 
 function pct(sec: number): number {
@@ -695,6 +829,19 @@ const trimLength = computed(() =>
             </span>
           </button>
         </div>
+
+        <button
+          v-if="exportable && !lazy"
+          class="w-full h-12 mt-3 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                 active:scale-[0.99] transition-transform disabled:opacity-50"
+          :disabled="exporting"
+          @click="exportChops"
+        >
+          {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
+        </button>
+        <p v-if="exportNote" class="text-center text-[11px] text-flag mt-2">
+          {{ exportNote }}
+        </p>
 
         <p class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
           Set a trim, then CHOP it. An empty pad takes a copy of the trim.
