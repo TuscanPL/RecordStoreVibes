@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { provider, CRATES } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
-import { useDigSession } from '../composables/useDigSession'
+import { useDigSession, type CachedView } from '../composables/useDigSession'
 import RecordRow from '../components/RecordRow.vue'
 
 /**
@@ -33,7 +33,18 @@ const visible = computed(() => records.value.filter(r => !library.isUnplayable(r
 const currentKey = ref<string>('')
 const drained = ref(false)
 
-async function run(key: string, call: (page: number) => Promise<any>, tag: string | null) {
+/**
+ * @param filtered Only true for a pull-to-dig. A plain load takes page 1 as
+ *   it comes; excluding what's been seen and paging deeper is what the pull
+ *   gesture is for, and doing it on every visit would burn through the
+ *   archive just by navigating around.
+ */
+async function run(
+  key: string,
+  call: (page: number, exclude?: ReadonlySet<string>) => Promise<any>,
+  tag: string | null,
+  filtered: boolean,
+) {
   const seq = ++requestSeq
   loading.value = true
   error.value = null
@@ -41,10 +52,13 @@ async function run(key: string, call: (page: number) => Promise<any>, tag: strin
   currentKey.value = key
 
   try {
-    const listing = await call(dig.takePage(key))
+    const listing = filtered
+      ? await call(dig.takePage(key), dig.seen)
+      : await call(1, undefined)
     if (seq !== requestSeq) return
 
     dig.advance(key, listing.lastPage)
+    // Remembered either way — that's what makes the next pull find new material.
     dig.remember(listing.records.map((r: CrateRecord) => r.id))
     if (listing.drained) dig.markDrained(key)
 
@@ -52,6 +66,18 @@ async function run(key: string, call: (page: number) => Promise<any>, tag: strin
     totalFound.value = listing.totalFound
     label.value = listing.label
     drained.value = listing.drained && listing.records.length === 0
+
+    dig.cacheView({
+      key,
+      tag,
+      query: query.value,
+      label: label.value,
+      records: listing.records,
+      totalFound: listing.totalFound,
+      drained: drained.value,
+      scrollTop: 0,
+    })
+    if (listEl.value) listEl.value.scrollTop = 0
   } catch (e) {
     if (seq !== requestSeq) return
     records.value = []
@@ -65,27 +91,82 @@ async function run(key: string, call: (page: number) => Promise<any>, tag: strin
   }
 }
 
-function openCrate(crate: { id: string; query: string }) {
-  query.value = ''
+function show(view: CachedView) {
+  activeCrate.value = view.tag
+  currentKey.value = view.key
+  // Whatever you're looking at is what you should come back to.
+  dig.setLast(view.key)
+  query.value = view.query
+  label.value = view.label
+  records.value = view.records
+  totalFound.value = view.totalFound
+  drained.value = view.drained
+  error.value = null
+  restoreScroll(view.scrollTop)
+}
+
+/**
+ * Rows aren't laid out yet on the first tick, so assigning scrollTop there
+ * clamps against a content height that's still growing. Reapply for a few
+ * frames until it sticks.
+ */
+function restoreScroll(top: number) {
+  if (top <= 0) return
+  let tries = 0
+  const apply = () => {
+    const el = listEl.value
+    if (!el) return
+    el.scrollTop = top
+    if (Math.abs(el.scrollTop - top) > 1 && tries++ < 8) requestAnimationFrame(apply)
+  }
+  nextTick(() => requestAnimationFrame(apply))
+}
+
+function fetchCrate(crate: { id: string; query: string }, filtered: boolean) {
   run(
     `crate:${crate.id}`,
-    page => provider.browseQuery(crate.query, { limit: LIMIT, page, exclude: dig.seen }),
+    (page, exclude) => provider.browseQuery(crate.query, { limit: LIMIT, page, exclude }),
     crate.id,
+    filtered,
   )
 }
 
-function runSearch() {
-  const q = query.value.trim()
-  if (!q) return
-  run(`q:${q.toLowerCase()}`, page => provider.search(q, { limit: LIMIT, page, exclude: dig.seen }), null)
+/** Selecting a crate shows what's already there rather than spending a fetch. */
+function openCrate(crate: { id: string; query: string }) {
+  query.value = ''
+  const cached = dig.getView(`crate:${crate.id}`)
+  if (cached) {
+    show(cached)
+    return
+  }
+  fetchCrate(crate, false)
 }
 
-/** Same query, next page, nothing already seen. */
+function runSearch(filtered = false) {
+  const q = query.value.trim()
+  if (!q) return
+  const key = `q:${q.toLowerCase()}`
+  if (!filtered) {
+    const cached = dig.getView(key)
+    if (cached) {
+      show(cached)
+      return
+    }
+  }
+  run(
+    key,
+    (page, exclude) => provider.search(q, { limit: LIMIT, page, exclude }),
+    null,
+    filtered,
+  )
+}
+
+/** The only path that pages deeper and drops what's already been seen. */
 function digDeeper() {
   if (loading.value || !currentKey.value) return
   const crate = CRATES.find(c => c.id === activeCrate.value)
-  if (crate) openCrate(crate)
-  else if (query.value.trim()) runSearch()
+  if (crate) fetchCrate(crate, true)
+  else if (query.value.trim()) runSearch(true)
 }
 
 /** Debounced: IA answers repeated hammering with escalating IP bans. */
@@ -139,7 +220,22 @@ function onTouchEnd() {
 
 const pullReady = computed(() => pull.value >= PULL_TRIGGER)
 
-onMounted(() => openCrate(CRATES[0]!))
+onMounted(() => {
+  // Coming back from a record restores exactly what was on screen, scroll
+  // included — no fetch, and no pages spent just for navigating.
+  const last = dig.lastView()
+  if (last) show(last)
+  else fetchCrate(CRATES[0]!, false)
+})
+
+function stashScroll() {
+  if (currentKey.value && listEl.value) {
+    dig.rememberScroll(currentKey.value, listEl.value.scrollTop)
+  }
+}
+
+// Unmount fires on the way into a record, which is exactly when to save it.
+onBeforeUnmount(stashScroll)
 </script>
 
 <template>
@@ -230,7 +326,9 @@ onMounted(() => openCrate(CRATES[0]!))
         </button>
       </div>
 
-      <form class="px-3 pb-3" @submit.prevent="runSearch">
+      <!-- Called with no args: the submit Event would otherwise arrive as
+           `filtered` and turn a plain search into a dig. -->
+      <form class="px-3 pb-3" @submit.prevent="runSearch()">
         <input
           v-model="query"
           type="search"
