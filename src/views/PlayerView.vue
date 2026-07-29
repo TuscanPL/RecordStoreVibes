@@ -210,6 +210,32 @@ function flag() {
   }, 1600)
 }
 
+
+/**
+ * Typed text is held locally until it's committed.
+ *
+ * The field binds :value, and the panel re-renders on every position tick
+ * while a track plays — so Vue kept resetting the input back to the stored
+ * note and each keystroke vanished. Keeping a draft means the bound value
+ * always matches what's in the field, so there's nothing to overwrite.
+ */
+const noteDrafts = ref<{ [id: string]: string }>({})
+
+function noteValue(m: { id: string; note?: string }): string {
+  return noteDrafts.value[m.id] ?? m.note ?? ''
+}
+
+function onNoteInput(id: string, value: string) {
+  noteDrafts.value[id] = value
+}
+
+function commitNote(id: string) {
+  const draft = noteDrafts.value[id]
+  if (draft === undefined) return
+  library.setNote(id, draft)
+  delete noteDrafts.value[id]
+}
+
 /** True when playback is sitting on this flag, within a beat or so. */
 function atMarker(m: Marker): boolean {
   if (!isCurrent.value || !track.value || m.trackName !== track.value.name) return false
@@ -355,12 +381,14 @@ watch(trackIndex, () => {
               </button>
 
               <input
-                :value="m.note ?? ''"
+                :value="noteValue(m)"
                 placeholder="note…"
                 class="flex-1 min-w-0 h-9 px-2 rounded bg-ink-700 text-[13px] text-cream
                        placeholder:text-ink-500 border border-ink-600
                        focus:outline-none focus:border-flag-dim"
-                @change="library.setNote(m.id, ($event.target as HTMLInputElement).value)"
+                @input="onNoteInput(m.id, ($event.target as HTMLInputElement).value)"
+                @change="commitNote(m.id)"
+                @blur="commitNote(m.id)"
               />
 
               <button

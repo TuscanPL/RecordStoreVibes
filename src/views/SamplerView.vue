@@ -938,29 +938,7 @@ const focusLabel = computed(() =>
       </p>
     </div>
 
-    <!-- Chopping turns the whole screen into the cut button. Aiming at a
-         particular pad was misleading — a cut always lands on the next one
-         in sequence, never on whichever pad was tapped. -->
-    <template v-if="lazy">
-      <div
-        class="fixed inset-0 z-40"
-        @pointerdown.prevent="lazyCut"
-      />
-      <div class="fixed inset-x-0 bottom-0 z-50 px-4 pb-safe pt-3">
-        <p class="text-center text-[12px] text-flag mb-2">
-          Tap anywhere to cut · {{ lazyNextPad }} chopped
-        </p>
-        <button
-          class="w-full h-14 rounded-lg bg-flag text-ink-900 text-[15px] font-semibold
-                 active:scale-[0.99] transition-transform"
-          @pointerdown.stop.prevent="endLazyChop"
-        >
-          DONE CHOPPING
-        </button>
-      </div>
-    </template>
-
-    <template v-else-if="sampler.buffer.value">
+    <template v-if="sampler.buffer.value">
       <div class="flex-none px-4 pt-1">
         <div
           ref="strip"
@@ -1036,11 +1014,13 @@ const focusLabel = computed(() =>
 
         </div>
 
-        <div
-          v-if="!lazy"
-          class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim"
-        >
+        <div class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim">
           <span>{{ focused ? formatTime(focused.startSec) : '—' }}</span>
+          <!-- Where playback actually is, for judging how long a phrase
+               runs before committing to a flag length. -->
+          <span v-if="sampler.active.value" class="text-cream">
+            ▸{{ formatTime(sampler.playhead.value) }}
+          </span>
           <button
             class="px-2 h-6 rounded"
             :class="focus === 'trim' ? 'text-cream' : 'text-flag active:bg-ink-700'"
@@ -1056,7 +1036,7 @@ const focusLabel = computed(() =>
           <span>{{ focused ? formatTime(focused.endSec) : '—' }}</span>
         </div>
 
-        <div v-if="!lazy" class="flex items-center gap-1.5 mt-2">
+        <div class="flex items-center gap-1.5 mt-2">
           <span class="text-[10px] text-ink-500 w-4">IN</span>
           <button class="trim" :disabled="!focused" @click="nudge('startSec', -0.1)">−</button>
           <button class="trim" :disabled="!focused" @click="nudge('startSec', 0.1)">+</button>
@@ -1066,7 +1046,7 @@ const focusLabel = computed(() =>
           <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
         </div>
 
-        <div v-if="!lazy" class="flex items-center gap-2 mt-2">
+        <div class="flex items-center gap-2 mt-2">
           <button
             class="flex-1 h-10 rounded-lg bg-ink-600 text-cream text-[13px]
                    active:bg-ink-500 disabled:opacity-40"
@@ -1082,6 +1062,15 @@ const focusLabel = computed(() =>
             @click="roll"
           >
             Roll
+          </button>
+          <button
+            class="px-3 h-10 rounded-lg border text-[13px] active:bg-ink-700"
+            :class="showMore ? 'border-flag text-flag' : 'border-ink-500 text-flag-dim'"
+            :aria-expanded="showMore"
+            aria-label="More controls"
+            @click="showMore = !showMore"
+          >
+            {{ showMore ? '▴' : '▾' }}
           </button>
           <button
             class="px-3 h-10 rounded-lg border border-ink-500 text-flag-soft text-[11px]
@@ -1117,18 +1106,10 @@ const focusLabel = computed(() =>
         </div>
       </div>
 
-      <div v-if="!lazy" class="flex-none flex justify-center pt-2">
-        <button
-          class="px-4 h-7 rounded-full border border-ink-600 text-[10px] tracking-widest
-                 text-flag-dim active:bg-ink-700"
-          :aria-expanded="showMore"
-          @click="showMore = !showMore"
-        >
-          {{ showMore ? '▴ LESS' : '▾ MORE' }}
-        </button>
-      </div>
-
-      <div class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto">
+      <div
+        class="flex-1 min-h-0 px-4 pt-3 pb-safe overflow-y-auto"
+        :class="lazy ? 'pb-32' : ''"
+      >
         <!-- Flags for this track. Tapping one sets the range, nothing else. -->
         <div v-if="showMore && !lazy && trackFlags.length" class="mb-3 rounded-lg border border-ink-600">
           <button
@@ -1340,6 +1321,27 @@ const focusLabel = computed(() =>
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
         </p>
+      </div>
+    </template>
+
+    <!-- Chopping layers over the view rather than replacing it: the pads
+         stay visible and fill in as cuts land, but the sheet swallows taps
+         so none of it is interactive. Aiming at a pad was misleading
+         anyway — a cut lands on the next pad in sequence, not the one
+         tapped. -->
+    <template v-if="lazy">
+      <div class="fixed inset-0 z-40" @pointerdown.prevent="lazyCut" />
+      <div class="fixed inset-x-0 bottom-0 z-50 px-4 pb-safe pt-3 bg-ink-900/90">
+        <p class="text-center text-[12px] text-flag mb-2">
+          Tap anywhere to cut · {{ lazyNextPad }} chopped
+        </p>
+        <button
+          class="w-full h-14 rounded-lg bg-flag text-ink-900 text-[15px] font-semibold
+                 active:scale-[0.99] transition-transform"
+          @pointerdown.stop.prevent="endLazyChop"
+        >
+          DONE CHOPPING
+        </button>
       </div>
     </template>
   </div>
