@@ -1,7 +1,24 @@
 import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import type { Record as CrateRecord, Marker } from '../providers/types'
-import { load, save, newId, padKey, PAD_COUNT, type Persisted, type Pad } from './storage'
+import {
+  load,
+  save,
+  newId,
+  padKey,
+  PAD_COUNT,
+  type Persisted,
+  type Pad,
+  type TrimState,
+} from './storage'
+
+export interface ChoppedTrack {
+  key: string
+  recordId: string
+  trackName: string
+  count: number
+  record: CrateRecord
+}
 
 export interface FlaggedGroup {
   record: CrateRecord
@@ -16,6 +33,7 @@ export const useLibrary = defineStore('library', () => {
   const starred = ref<{ [id: string]: number }>(initial.starred)
   const unplayable = ref<string[]>(initial.unplayable)
   const pads = ref<{ [trackKey: string]: (Pad | null)[] }>(initial.pads)
+  const trims = ref<{ [trackKey: string]: TrimState }>(initial.trims)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
 
@@ -27,11 +45,12 @@ export const useLibrary = defineStore('library', () => {
       starred: starred.value,
       unplayable: unplayable.value,
       pads: pads.value,
+      trims: trims.value,
     }
   }
 
   watch(
-    [records, markers, starred, unplayable, pads],
+    [records, markers, starred, unplayable, pads, trims],
     () => {
       persistFailed.value = !save(snapshot())
     },
@@ -47,6 +66,15 @@ export const useLibrary = defineStore('library', () => {
     bank[index] = pad
     if (bank.every(p => p === null)) delete pads.value[key]
     else pads.value[key] = bank
+  }
+
+  function trimFor(key: string): TrimState | null {
+    return trims.value[key] ?? null
+  }
+
+  function setTrim(key: string, trim: TrimState | null) {
+    if (trim) trims.value[key] = trim
+    else delete trims.value[key]
   }
 
   /** Remembered so a dud item never surfaces in a listing again. */
@@ -106,11 +134,19 @@ export const useLibrary = defineStore('library', () => {
       .sort((a, b) => a.timestampSec - b.timestampSec)
   }
 
-  /** Drops cached metadata for records that are neither flagged nor starred. */
+  /** True when any track of this record has pads assigned. */
+  function hasPads(recordId: string): boolean {
+    const prefix = `${recordId}::`
+    return Object.keys(pads.value).some(k => k.startsWith(prefix))
+  }
+
+  /** Drops cached metadata for records nothing points at any more. */
   function gc() {
     for (const id of Object.keys(records.value)) {
       const stillWanted =
-        starred.value[id] !== undefined || markers.value.some(m => m.recordId === id)
+        starred.value[id] !== undefined ||
+        markers.value.some(m => m.recordId === id) ||
+        hasPads(id)
       if (!stillWanted) delete records.value[id]
     }
   }
@@ -150,18 +186,37 @@ export const useLibrary = defineStore('library', () => {
 
   const markerCount = computed(() => markers.value.length)
 
+  /** Tracks carrying pad layouts, for the chopped section of the flag list. */
+  const chopped = computed<ChoppedTrack[]>(() => {
+    const out: ChoppedTrack[] = []
+    for (const [k, bank] of Object.entries(pads.value)) {
+      const at = k.indexOf('::')
+      const recordId = k.slice(0, at)
+      const record = records.value[recordId]
+      const count = bank.filter(Boolean).length
+      if (!record || count === 0) continue
+      out.push({ key: k, recordId, trackName: k.slice(at + 2), count, record })
+    }
+    return out.sort((a, b) => b.count - a.count)
+  })
+
   return {
     records,
     markers,
     starred,
     unplayable,
     pads,
+    trims,
     persistFailed,
     markUnplayable,
     isUnplayable,
     padsFor,
     setPad,
+    trimFor,
+    setTrim,
     padKey,
+    hasPads,
+    chopped,
     remember,
     dropMarker,
     removeMarker,

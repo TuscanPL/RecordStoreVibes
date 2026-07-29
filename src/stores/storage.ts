@@ -8,6 +8,14 @@ export interface Pad {
   pitch: number
 }
 
+/** The working range for a track, kept so you resume where you stopped. */
+export interface TrimState {
+  startSec: number
+  endSec: number
+  /** Whether the strip was zoomed to it. */
+  zoomed: boolean
+}
+
 export const PAD_COUNT = 16
 
 /** Pads belong to a track: one decoded buffer in memory, never sixteen. */
@@ -34,6 +42,8 @@ export interface Persisted {
    * audio itself is re-downloaded when you open the sampler again.
    */
   pads: { [trackKey: string]: (Pad | null)[] }
+  /** Working ranges per track. Two numbers each — cheap to keep. */
+  trims: { [trackKey: string]: TrimState }
 }
 
 const EMPTY: Persisted = {
@@ -43,6 +53,7 @@ const EMPTY: Persisted = {
   starred: {},
   unplayable: [],
   pads: {},
+  trims: {},
 }
 
 export function load(): Persisted {
@@ -58,6 +69,7 @@ export function load(): Persisted {
       starred: parsed.starred ?? {},
       unplayable: Array.isArray(parsed.unplayable) ? parsed.unplayable : [],
       pads: parsed.pads ?? {},
+      trims: parsed.trims ?? {},
     }
   } catch {
     // Corrupt or unavailable storage shouldn't take the app down.
