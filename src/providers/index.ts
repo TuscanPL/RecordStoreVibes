@@ -9,3 +9,18 @@ import { InternetArchiveProvider } from './internet-archive'
 export const provider: MusicProvider = new InternetArchiveProvider()
 
 export * from './types'
+
+/**
+ * Where a record came from, in words.
+ *
+ * Falls back to the host of its page, so records cached before `source` was
+ * stored still say something honest rather than nothing.
+ */
+export function sourceLabel(record: { source?: string; sourceUrl?: string }): string {
+  if (record.source) return record.source
+  try {
+    return new URL(record.sourceUrl ?? '').hostname.replace(/^www\./, '')
+  } catch {
+    return 'unknown source'
+  }
+}

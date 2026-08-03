@@ -1,5 +1,6 @@
 import type { FlaggedGroup } from '../stores/library'
 import { formatTime } from './useAudio'
+import { sourceLabel } from '../providers'
 
 function download(filename: string, mime: string, body: string) {
   const blob = new Blob([body], { type: mime })
@@ -26,7 +27,6 @@ export function buildJson(groups: FlaggedGroup[]): string {
   return JSON.stringify(
     {
       generatedAt: new Date().toISOString(),
-      source: 'Internet Archive',
       records: groups.map(({ record, markers }) => {
         const byTrack = new Map<string, typeof markers>()
         for (const m of markers) {
@@ -40,6 +40,7 @@ export function buildJson(groups: FlaggedGroup[]): string {
           title: record.title,
           creator: record.creator,
           year: record.year,
+          source: sourceLabel(record),
           sourceUrl: record.sourceUrl,
           tracks: [...byTrack.entries()].map(([trackName, list]) => ({
             file: trackName,
@@ -68,6 +69,7 @@ export function buildCsv(groups: FlaggedGroup[]): string {
     'identifier',
     'title',
     'creator',
+    'source',
     'file',
     'downloadUrl',
     'timestampSec',
@@ -84,6 +86,7 @@ export function buildCsv(groups: FlaggedGroup[]): string {
           record.id,
           record.title,
           record.creator,
+          sourceLabel(record),
           m.trackName,
           trackUrl(record.id, m.trackName),
           m.timestampSec.toFixed(2),

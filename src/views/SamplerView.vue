@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { provider } from '../providers'
+import { provider, sourceLabel } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { PAD_COUNT, PAD_BANKS, padKey, type Pad } from '../stores/storage'
@@ -885,6 +885,7 @@ async function prepareArchive() {
         title: record.value?.title ?? props.id,
         creator: record.value?.creator ?? 'Unknown',
         track: trackName.value,
+        library: record.value ? sourceLabel(record.value) : 'unknown source',
         details: record.value?.sourceUrl,
         download: `https://archive.org/download/${props.id}/${encodeURIComponent(trackName.value)}`,
       },

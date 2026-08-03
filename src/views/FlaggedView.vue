@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useLibrary } from '../stores/library'
+import { sourceLabel } from '../providers'
 import { formatTime } from '../composables/useAudio'
 import { useExport } from '../composables/useExport'
 import { downloadedBytes, clearDownloads } from '../composables/useSampler'
@@ -116,6 +117,16 @@ function fileCount(markers: { trackName: string }[]): number {
                 · {{ fileCount(g.markers) }} file{{ fileCount(g.markers) === 1 ? '' : 's' }}
               </span>
             </p>
+            <!-- Provenance travels with the flag, so it's never a guess
+                 where a sample came from. -->
+            <p class="mt-1">
+              <span
+                class="inline-block px-1.5 py-0.5 rounded text-[10px] tracking-wide
+                       bg-ink-700 text-flag-dim"
+              >
+                {{ sourceLabel(g.record) }}
+              </span>
+            </p>
           </div>
           <svg
             class="w-5 h-5 flex-none text-ink-500 transition-transform"
@@ -183,7 +194,7 @@ function fileCount(markers: { trackName: string }[]): number {
               class="px-3 h-9 inline-flex items-center rounded-full border border-ink-500
                      text-[12px] text-ink-500 active:bg-ink-700"
             >
-              archive.org
+              {{ sourceLabel(g.record) }}
             </a>
           </div>
         </div>
@@ -223,7 +234,9 @@ function fileCount(markers: { trackName: string }[]): number {
             </div>
             <div class="flex-1 min-w-0">
               <p class="text-[13px] text-cream truncate">{{ c.record.title }}</p>
-              <p class="text-[11px] text-flag-dim truncate">{{ c.trackName }}</p>
+              <p class="text-[11px] text-flag-dim truncate">
+                {{ c.trackName }} · {{ sourceLabel(c.record) }}
+              </p>
             </div>
             <span class="text-[11px] text-flag tabular-nums flex-none">
               {{ c.count }} pad{{ c.count === 1 ? '' : 's' }}
