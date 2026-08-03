@@ -16,7 +16,9 @@ const audio = useAudio()
 
 // The player is a pushed detail view — it owns the whole screen, and the
 // now-playing strip would just be a link back to where you already are.
-const showTabs = computed(() => route.name !== 'player' && route.name !== 'sampler')
+const showTabs = computed(
+  () => !['player', 'sampler', 'landing'].includes(String(route.name)),
+)
 
 /**
  * Whether the strip carries over out of the player.
@@ -62,7 +64,7 @@ watch(
     >
       <div class="flex">
         <router-link
-          to="/"
+          to="/browse"
           class="flex-1 flex flex-col items-center gap-1 py-3 text-[11px] tracking-wide"
           :class="route.name === 'browse' ? 'text-flag' : 'text-flag-dim'"
         >

@@ -7,6 +7,9 @@ const THUMB_URL = 'https://archive.org/services/img'
 
 const REQUEST_TIMEOUT = 12000
 
+/** Shown on flags and written into exports. */
+const SOURCE = 'Internet Archive'
+
 /**
  * Browser-playable audio only. IA items frequently also carry FLAC and
  * lossless WAV — those are the download-for-later formats, not stream ones.
@@ -104,6 +107,7 @@ function toRecord(doc: SearchDoc): Record {
     artworkUrl: `${THUMB_URL}/${doc.identifier}`,
     tracks: [],
     sourceUrl: `https://archive.org/details/${doc.identifier}`,
+    source: SOURCE,
   }
 }
 
@@ -218,6 +222,7 @@ export class InternetArchiveProvider implements MusicProvider {
       artworkUrl: `${THUMB_URL}/${id}`,
       tracks,
       sourceUrl: `https://archive.org/details/${id}`,
+      source: SOURCE,
     }
   }
 }

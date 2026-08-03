@@ -20,6 +20,12 @@ export interface Record {
   tracks: Track[]
   /** archive.org details page — goes into the export manifest. */
   sourceUrl: string
+  /**
+   * Which library it came from. Travels with the record so provenance is
+   * visible wherever it turns up, and stays right once there's more than
+   * one place to dig.
+   */
+  source?: string
 }
 
 /** A flagged timestamp. The core artifact this app produces. */

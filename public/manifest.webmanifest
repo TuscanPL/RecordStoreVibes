@@ -1,8 +1,8 @@
 {
-  "name": "Crate",
+  "name": "CrateSampler",
   "short_name": "Crate",
-  "description": "Find and flag sample material. One thumb.",
-  "start_url": "./",
+  "description": "Dig for samples on your phone. Flag, chop, take them away.",
+  "start_url": "./#/browse",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
