@@ -112,13 +112,36 @@ const ZOOM_LEVELS = [
 const zoomLevel = ref(0)
 
 /**
+ * What the strip does with a thumb.
+ *
+ * Zoomed in, the window is a few seconds of a several-minute track and it's
+ * easy to lose the thread of where that is. Read mode gives the drag back to
+ * the waveform so it can be pushed along like a scroll — nothing under the
+ * finger is edited, so you can go looking without putting a chop wrong.
+ * Edit mode is the working mode: draw a trim, grab an edge, retrim a chop.
+ */
+const stripMode = ref<'read' | 'edit'>('edit')
+
+/**
  * What zoom centres on. Held rather than derived so it settles on the edge
  * that was last worked — moving the start point and zooming in should bring
  * you closer to that start point, not to the middle of the chop.
  */
 const zoomCentre = ref(0)
 
+/**
+ * Where reading has pushed the window to, overriding what the zoom would
+ * frame on its own.
+ *
+ * Kept as an explicit window rather than a centre because it has to survive
+ * ALL and FIT, neither of which is built around one: FIT follows whatever is
+ * focused, so a pan expressed as a centre would be argued back the moment
+ * the focus moved. Any deliberate re-framing drops it.
+ */
+const panView = ref<{ start: number; end: number } | null>(null)
+
 function recentreZoom(at?: number) {
+  panView.value = null
   if (at !== undefined) {
     zoomCentre.value = at
     return
@@ -152,6 +175,8 @@ const view = computed(() => {
     return windowAround(r.start - pad, r.end + pad)
   }
 
+  if (panView.value) return panView.value
+
   const level = ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!
   if (level.span === 'all') return { start: 0, end: total.value }
 
@@ -171,8 +196,11 @@ const zoomLabel = computed(() => (ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]
 function stepZoom(by: number) {
   const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomLevel.value + by))
   if (next === zoomLevel.value) return
-  // Zooming in from a fitted view starts at the middle of what was fitted.
-  if (zoomLevel.value <= 1) recentreZoom()
+  const panned = panView.value
+  // Zoom around wherever reading left off, or the middle of what was fitted.
+  if (panned) recentreZoom((panned.start + panned.end) / 2)
+  else if (zoomLevel.value <= 1) recentreZoom()
+  panView.value = null
   zoomLevel.value = next
   commitTrim()
 }
@@ -326,9 +354,27 @@ function focusTrim() {
   recentreZoom()
 }
 
+/**
+ * A read drag, held from the window it started in.
+ *
+ * Panning against the live window would compound — each frame would shift a
+ * view that had already shifted — so the offset is always measured from
+ * where the thumb went down.
+ */
+let pan: { x: number; base: { start: number; end: number }; moved: boolean } | null = null
+
+/** Below this a read drag was a tap, and selects instead of pans. */
+const PAN_SLOP_PX = 6
+
 function onDown(e: PointerEvent) {
   if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+
+  if (stripMode.value === 'read') {
+    pan = { x: e.clientX, base: { ...view.value }, moved: false }
+    return
+  }
+
   dragView.value = { ...view.value }
   const t = timeAt(e)
   const scale = pxPerSec()
@@ -376,6 +422,22 @@ function onDown(e: PointerEvent) {
 }
 
 function onMove(e: PointerEvent) {
+  if (pan) {
+    const el = strip.value
+    if (!el) return
+    const dx = e.clientX - pan.x
+    if (!pan.moved) {
+      if (Math.abs(dx) < PAN_SLOP_PX) return
+      pan.moved = true
+    }
+    // The window keeps its width, so the track slides under a fixed scale.
+    const span = pan.base.end - pan.base.start
+    const width = el.getBoundingClientRect().width || 1
+    const dt = (dx / width) * span
+    panView.value = windowAround(pan.base.start - dt, pan.base.end - dt)
+    return
+  }
+
   if (!mode || !draft.value) return
   const t = timeAt(e)
   const cur = draft.value.range
@@ -437,6 +499,33 @@ function onUp(e: PointerEvent) {
     ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
   } catch {
     // capture already gone
+  }
+
+  if (pan) {
+    const p = pan
+    pan = null
+    if (p.moved) {
+      // Zooming from here should step in on what was just read, not jump
+      // back to whatever the controls were pointing at.
+      const v = panView.value
+      if (v) zoomCentre.value = (v.start + v.end) / 2
+      return
+    }
+    // A tap that went nowhere still selects — reading is easier when you can
+    // hear what you're looking at. Nothing re-frames; that's the point.
+    const t = timeAt(e)
+    const hit = chopAt(t)
+    if (hit >= 0) {
+      focus.value = hit
+      playFocused()
+      return
+    }
+    const t0 = trim.value
+    if (t0 && t >= t0.startSec && t <= t0.endSec) {
+      focus.value = 'trim'
+      playFocused()
+    }
+    return
   }
 
   // One write for the whole gesture, then the strip redraws from the store.
@@ -986,6 +1075,25 @@ function inView(a: number, b: number): boolean {
   return b > v.start && a < v.end
 }
 
+/**
+ * Where the window sits in the whole track, as percentages.
+ *
+ * The strip alone can't say this: at 1s every part of a song looks like
+ * every other part. Null when the whole track is already on screen, since
+ * there's nothing to locate then.
+ */
+const overview = computed(() => {
+  if (total.value <= 0) return null
+  const v = shownView.value
+  const span = v.end - v.start
+  if (span >= total.value - 1e-6) return null
+  return {
+    left: (v.start / total.value) * 100,
+    width: Math.max(1.5, (span / total.value) * 100),
+    trim: trimShown.value ? (trimShown.value.startSec / total.value) * 100 : null,
+  }
+})
+
 const focusedLength = computed(() =>
   focused.value ? focused.value.endSec - focused.value.startSec : 0,
 )
@@ -1062,6 +1170,24 @@ const focusLabel = computed(() =>
             />
           </div>
 
+          <!-- What the thumb does here: push the track along, or cut it. -->
+          <div
+            v-if="!lazy"
+            class="absolute top-1 left-1 z-10 flex items-center rounded border
+                   border-ink-500 bg-ink-900/80 overflow-hidden"
+          >
+            <button
+              v-for="m in (['read', 'edit'] as const)"
+              :key="m"
+              class="px-2 h-6 text-[9px] tracking-wider leading-none transition-colors"
+              :class="stripMode === m ? 'bg-flag text-ink-900 font-medium' : 'text-flag-soft'"
+              :aria-pressed="stripMode === m"
+              @pointerdown.stop="stripMode = m"
+            >
+              {{ m.toUpperCase() }}
+            </button>
+          </div>
+
           <!-- Zoom ladder. Steps in around the point last edited. -->
           <div
             class="absolute top-1 right-1 z-10 flex items-center rounded border
@@ -1132,6 +1258,20 @@ const focusLabel = computed(() =>
 
         </div>
 
+        <!-- The whole track, with the window marked on it. Only worth the
+             pixels once the strip has stopped showing everything. -->
+        <div v-if="overview" class="relative h-1 mt-1 rounded-full bg-ink-700 overflow-hidden">
+          <div
+            v-if="overview.trim !== null"
+            class="absolute inset-y-0 w-px bg-cream/50"
+            :style="{ left: `${overview.trim}%` }"
+          />
+          <div
+            class="absolute inset-y-0 rounded-full bg-flag transition-none"
+            :style="{ left: `${overview.left}%`, width: `${overview.width}%` }"
+          />
+        </div>
+
         <div class="flex items-center justify-between mt-1 text-[11px] tabular-nums text-flag-dim">
           <span>{{ focused ? formatTime(focused.startSec) : '—' }}</span>
           <!-- Where playback actually is, for judging how long a phrase
@@ -1149,6 +1289,7 @@ const focusLabel = computed(() =>
               {{ focusLabel }} · {{ focusedLength.toFixed(2) }}s
               <span v-if="focus !== 'trim'" class="text-ink-500 text-[10px]">· to trim</span>
             </template>
+            <template v-else-if="stripMode === 'read'">Switch to EDIT to cut a range</template>
             <template v-else>Drag the waveform, or tap a flag</template>
           </button>
           <span>{{ focused ? formatTime(focused.endSec) : '—' }}</span>
@@ -1436,8 +1577,9 @@ const focusLabel = computed(() =>
         </div>
 
         <p v-if="showMore" class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
-          Tap a pad to point the controls at that chop; tap the trim to go back.
-          Swipe the pads for another bank.
+          READ drags the waveform along without changing anything; EDIT draws
+          and retrims. Tap a pad to point the controls at that chop; tap the
+          trim to go back. Swipe the pads for another bank.
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
