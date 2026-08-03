@@ -96,7 +96,7 @@ export const HELP: Record<HelpKey, HelpTopic> = {
       },
       {
         term: 'The ▾ button',
-        text: 'Folds away the things you need less often — pitch, the flag list and clearing a bank. Tap it and they appear below the transport.',
+        text: 'Folds away the things you need less often — pitch, the flag list, clearing a bank, and EXPORT CHOPS along the bottom.',
       },
       {
         term: 'Nudges and pitch',
@@ -104,7 +104,7 @@ export const HELP: Record<HelpKey, HelpTopic> = {
       },
       {
         term: 'EXPORT CHOPS',
-        text: 'Pinned along the bottom as soon as there is a trim or a pad. A zip of WAVs plus a manifest with the timestamps, the pitches and a link back to the original where there is one.',
+        text: 'Tap ▾ and it sits along the bottom, once there is a trim or a pad. A zip of WAVs plus a manifest with the timestamps, the pitches and a link back to the original where there is one.',
       },
     ],
   },

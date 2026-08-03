@@ -1742,13 +1742,13 @@ const focusLabel = computed(() =>
         </p>
       </div>
 
-      <!-- Export sits outside the scroll area.
-           Sixteen pads are taller than the screen, so anything underneath
-           them is off the bottom — which is the wrong place for the one
-           thing this whole view exists to produce. Out of the ▾ fold too:
-           it's the end of the job, not an occasional adjustment. -->
+      <!-- Behind the ▾ like the rest of the occasional controls, but
+           pinned rather than left at the end of the scroll: sixteen pads
+           are taller than the screen, so opening the fold used to reveal
+           this below the bottom of it. Folded away it costs no pad height;
+           opened it's on screen immediately. -->
       <div
-        v-if="exportable && !lazy"
+        v-if="showMore && exportable && !lazy"
         class="flex-none px-4 pt-2 pb-safe border-t border-ink-700 bg-ink-800"
       >
         <!-- Only worth asking when something is actually pitched. -->
