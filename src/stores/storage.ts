@@ -12,8 +12,10 @@ export interface Pad {
 export interface TrimState {
   startSec: number
   endSec: number
-  /** Whether the strip was zoomed to it. */
-  zoomed: boolean
+  /** Legacy on/off zoom, kept so older saves still restore. */
+  zoomed?: boolean
+  /** Index into the zoom ladder. */
+  zoom?: number
 }
 
 export const PAD_COUNT = 16

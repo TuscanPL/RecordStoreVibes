@@ -93,29 +93,89 @@ const MIN_LEN = 0.05
 /* ---- zoom ---- */
 
 const ZOOM_PAD = 0.15
-const zoomed = ref(false)
 
-/** Zoom frames whatever is being worked on: the chop range, else the trim. */
-const zoomAnchor = computed<Range | null>(() => {
-  if (lazy.value) return { startSec: lazyRange.value.start, endSec: lazyRange.value.end }
-  return focused.value
-})
+/**
+ * A ladder of window widths rather than an on/off toggle, following how the
+ * SP-404 does it: knob two zooms the area around the point being edited, so
+ * a marker can be placed by eye at whatever resolution the job needs.
+ */
+const ZOOM_LEVELS = [
+  { label: 'ALL', span: 'all' },
+  { label: 'FIT', span: 'fit' },
+  { label: '8s', span: 8 },
+  { label: '3s', span: 3 },
+  { label: '1s', span: 1 },
+  { label: '0.3s', span: 0.3 },
+  { label: '0.1s', span: 0.1 },
+] as const
+
+const zoomLevel = ref(0)
+
+/**
+ * What zoom centres on. Held rather than derived so it settles on the edge
+ * that was last worked — moving the start point and zooming in should bring
+ * you closer to that start point, not to the middle of the chop.
+ */
+const zoomCentre = ref(0)
+
+function recentreZoom(at?: number) {
+  if (at !== undefined) {
+    zoomCentre.value = at
+    return
+  }
+  const f = focused.value
+  if (f) zoomCentre.value = (f.startSec + f.endSec) / 2
+}
+
+function windowAround(start: number, end: number) {
+  const span = Math.min(end - start, total.value)
+  let a = Math.max(0, start)
+  let b = Math.min(total.value, a + span)
+  // Keep the width when the window runs off an end, rather than squashing it.
+  if (b >= total.value) {
+    b = total.value
+    a = Math.max(0, b - span)
+  }
+  return { start: a, end: b }
+}
 
 /**
  * The slice of track on screen. Everything positional works against this
  * rather than the whole file, so zooming needs no separate code path.
  */
 const view = computed(() => {
-  const a = zoomAnchor.value
-  if (!zoomed.value || !a || total.value <= 0) return { start: 0, end: total.value }
-  const pad = Math.max(0.2, (a.endSec - a.startSec) * ZOOM_PAD)
-  return {
-    start: Math.max(0, a.startSec - pad),
-    end: Math.min(total.value, a.endSec + pad),
+  if (total.value <= 0) return { start: 0, end: 0 }
+
+  if (lazy.value) {
+    const r = lazyRange.value
+    const pad = Math.max(0.2, (r.end - r.start) * ZOOM_PAD)
+    return windowAround(r.start - pad, r.end + pad)
   }
+
+  const level = ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!
+  if (level.span === 'all') return { start: 0, end: total.value }
+
+  if (level.span === 'fit') {
+    const f = focused.value
+    if (!f) return { start: 0, end: total.value }
+    const pad = Math.max(0.2, (f.endSec - f.startSec) * ZOOM_PAD)
+    return windowAround(f.startSec - pad, f.endSec + pad)
+  }
+
+  const half = level.span / 2
+  return windowAround(zoomCentre.value - half, zoomCentre.value + half)
 })
 
-const canZoom = computed(() => zoomAnchor.value !== null)
+const zoomLabel = computed(() => (ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!).label)
+
+function stepZoom(by: number) {
+  const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomLevel.value + by))
+  if (next === zoomLevel.value) return
+  // Zooming in from a fitted view starts at the middle of what was fitted.
+  if (zoomLevel.value <= 1) recentreZoom()
+  zoomLevel.value = next
+  commitTrim()
+}
 const degraded = computed(() => sampler.rate.value > 0 && sampler.rate.value < 44100)
 
 onMounted(async () => {
@@ -143,7 +203,9 @@ onMounted(async () => {
       const start = Math.max(0, Math.min(saved.startSec, total.value - MIN_LEN))
       const end = Math.max(start + MIN_LEN, Math.min(saved.endSec, total.value))
       trim.value = { startSec: start, endSec: end }
-      zoomed.value = saved.zoomed
+      // `zoomed` predates the ladder: an old on/off save maps to FIT.
+      zoomLevel.value = saved.zoom ?? (saved.zoomed ? 1 : 0)
+      recentreZoom()
     }
   } catch {
     loadError.value = "Couldn't open the sampler for this track."
@@ -199,8 +261,16 @@ const draft = ref<{ index: 'trim' | number; range: Range } | null>(null)
 /** The joined neighbour, dragged along so the seam stays visibly closed. */
 const draftNeighbour = ref<{ index: number; range: Range } | null>(null)
 
+/**
+ * What's actually on screen. Frozen for the whole gesture, canvas included:
+ * the overlays already used the frozen window but the waveform was reading
+ * the live one, so the bars slid under the finger while the markers stayed
+ * put. It re-frames once the thumb lifts.
+ */
+const shownView = computed(() => dragView.value ?? view.value)
+
 function activeView(): { start: number; end: number } {
-  return dragView.value ?? view.value
+  return shownView.value
 }
 
 /**
@@ -210,7 +280,7 @@ function activeView(): { start: number; end: number } {
 function commitTrim() {
   library.setTrim(
     key.value,
-    trim.value ? { ...trim.value, zoomed: zoomed.value } : null,
+    trim.value ? { ...trim.value, zoom: zoomLevel.value } : null,
   )
 }
 
@@ -253,6 +323,7 @@ function chopAt(t: number): number {
 
 function focusTrim() {
   focus.value = 'trim'
+  recentreZoom()
 }
 
 function onDown(e: PointerEvent) {
@@ -283,6 +354,7 @@ function onDown(e: PointerEvent) {
   if (hit >= 0) {
     mode = null
     focus.value = hit
+    recentreZoom()
     playFocused()
     return
   }
@@ -390,6 +462,14 @@ function onUp(e: PointerEvent) {
     }
   }
 
+  // Re-frame on the edge that was just placed, the way the hardware zooms
+  // around the point being edited.
+  if (edit) {
+    if (mode === 'start') recentreZoom(edit.range.startSec)
+    else if (mode === 'end') recentreZoom(edit.range.endSec)
+    else recentreZoom()
+  }
+
   draft.value = null
   draftNeighbour.value = null
   dragView.value = null
@@ -408,6 +488,7 @@ function nudge(edge: 'startSec' | 'endSec', delta: number) {
   next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
   if (next.endSec - next.startSec < MIN_LEN) return
   writeFocused(next)
+  recentreZoom(next[edge])
 }
 
 function playFocused() {
@@ -474,7 +555,8 @@ function useFlag(atSec: number) {
   const end = Math.max(start + MIN_LEN, Math.min(total.value, start + flagLength.value))
   trim.value = { startSec: start, endSec: end }
   focus.value = 'trim'
-  zoomed.value = true
+  if (zoomLevel.value === 0) zoomLevel.value = 1
+  recentreZoom(start)
   commitTrim()
   playFocused()
 }
@@ -510,6 +592,7 @@ function padDown(i: number, e: PointerEvent) {
   const existing = bank.value[i]
 
   if (existing) {
+    recentreZoom()
     sampler.play(existing, i)
     return
   }
@@ -639,7 +722,6 @@ function startLazyChop() {
   // clear the bank or swipe to an empty one for a clean slate.
 
   lazy.value = true
-  zoomed.value = true
   sampler.play({ startSec: cur.startSec, endSec: cur.endSec, pitch: 0 }, null, endLazyChop)
 }
 
@@ -954,22 +1036,38 @@ const focusLabel = computed(() =>
               :peaks="sampler.peaks.value"
               :progress="0"
               :markers="flagPercents"
-              :range-start="total > 0 ? view.start / total : 0"
-              :range-end="total > 0 ? view.end / total : 1"
-              :dense="zoomed"
+              :range-start="total > 0 ? shownView.start / total : 0"
+              :range-end="total > 0 ? shownView.end / total : 1"
+              :dense="zoomLevel > 0"
             />
           </div>
 
-          <button
-            v-if="canZoom"
-            class="absolute top-1 right-1 z-10 px-2 h-6 rounded border text-[9px] tracking-wide"
-            :class="zoomed
-              ? 'border-flag bg-ink-900/80 text-flag'
-              : 'border-ink-500 bg-ink-900/70 text-flag-soft'"
-            @pointerdown.stop="zoomed = !zoomed; commitTrim()"
+          <!-- Zoom ladder. Steps in around the point last edited. -->
+          <div
+            class="absolute top-1 right-1 z-10 flex items-center rounded border
+                   border-ink-500 bg-ink-900/80 overflow-hidden"
           >
-            {{ zoomed ? 'TRIM' : 'ALL' }}
-          </button>
+            <button
+              class="w-7 h-6 text-[13px] leading-none text-flag-soft disabled:opacity-30"
+              :disabled="zoomLevel === 0"
+              aria-label="Zoom out"
+              @pointerdown.stop="stepZoom(-1)"
+            >
+              −
+            </button>
+            <span class="px-1 text-[9px] tabular-nums w-9 text-center"
+                  :class="zoomLevel > 0 ? 'text-flag' : 'text-flag-soft'">
+              {{ zoomLabel }}
+            </span>
+            <button
+              class="w-7 h-6 text-[13px] leading-none text-flag-soft disabled:opacity-30"
+              :disabled="zoomLevel === ZOOM_LEVELS.length - 1"
+              aria-label="Zoom in"
+              @pointerdown.stop="stepZoom(1)"
+            >
+              +
+            </button>
+          </div>
 
           <!-- Chops already assigned, drawn under the trim. -->
           <template v-for="(p, i) in chops" :key="i">
