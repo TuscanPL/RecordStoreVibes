@@ -419,6 +419,22 @@ function focusTrim() {
 }
 
 /**
+ * Drops the working range.
+ *
+ * No confirmation, unlike clearing a bank: pads are copies of the range
+ * rather than views onto it, so nothing assigned is touched and the only
+ * loss is one drag. Focus stays wherever it was — clearing the trim says
+ * nothing about which pad you were working on.
+ */
+function clearTrim() {
+  if (!trim.value) return
+  trim.value = null
+  commitTrim()
+  // Only the trim's own playback stops; a pad audition is unrelated to it.
+  if (sampler.active.value && sampler.playing.value === null) sampler.stop()
+}
+
+/**
  * A read drag, held from the window it started in.
  *
  * Panning against the live window would compound — each frame would shift a
@@ -1310,6 +1326,14 @@ const focusLabel = computed(() =>
         <p class="text-[13px] text-cream truncate">{{ trackMeta?.title ?? 'Pads' }}</p>
         <p class="text-[11px] text-flag-dim truncate">{{ record?.creator }}</p>
       </div>
+      <button
+        class="px-2.5 h-9 rounded-lg border border-ink-500 text-[11px] tracking-wide
+               text-flag-soft active:bg-ink-700 disabled:opacity-40"
+        :disabled="!trim"
+        @click="clearTrim"
+      >
+        CLEAR TRIM
+      </button>
       <button
         class="px-3 h-9 rounded-lg border border-ink-500 text-[11px] tracking-wide
                text-flag-soft active:bg-ink-700"
