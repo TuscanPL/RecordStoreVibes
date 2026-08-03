@@ -12,6 +12,7 @@ import {
   formatBytes,
 } from '../composables/useWaveform'
 import Waveform from '../components/Waveform.vue'
+import HelpButton from '../components/HelpButton.vue'
 
 const props = defineProps<{ id: string }>()
 const router = useRouter()
@@ -360,6 +361,8 @@ watch(trackIndex, () => {
           <path d="M12 3.5l2.6 5.3 5.9.86-4.25 4.14 1 5.87L12 16.9l-5.25 2.77 1-5.87L3.5 9.66l5.9-.86z" stroke-linejoin="round" />
         </svg>
       </button>
+
+      <HelpButton topic="player" />
     </header>
 
     <p v-if="error" class="px-6 py-10 text-center text-[14px] text-red-300/80">{{ error }}</p>
