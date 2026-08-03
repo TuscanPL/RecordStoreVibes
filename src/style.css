@@ -3,13 +3,10 @@
 @tailwind utilities;
 
 html,
-body,
-#app {
+body {
   margin: 0;
   padding: 0;
-  width: 100%;
-  /* dvh, not vh: Safari's collapsing toolbar makes vh lie on iPhone. */
-  height: 100dvh;
+  height: 100%;
   overflow: hidden;
   background-color: #0e0c0a;
   color: #f2ece0;
@@ -19,6 +16,23 @@ body,
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
   overscroll-behavior: none;
+}
+
+/*
+ * Pinned to the viewport rather than sized with viewport units.
+ *
+ * A home-screen web app on iOS doesn't resolve vh/dvh against the window
+ * you can actually see — it can come back short of the screen, leaving the
+ * app floating above the home indicator with a band of nothing under it.
+ * `inset: 0` is measured by the compositor rather than computed from a
+ * unit, so it fills whatever the window really is. With viewport-fit=cover
+ * that includes the safe areas, and the pb-safe paddings keep the controls
+ * clear of the indicator itself.
+ */
+#app {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
 }
 
 * {
