@@ -1719,68 +1719,6 @@ const focusLabel = computed(() =>
           </button>
         </div>
 
-        <!-- Only worth asking when something is actually pitched. -->
-        <div
-          v-if="exportable && !lazy && hasPitchedPads"
-          class="flex items-center gap-2 mt-3"
-        >
-          <span class="text-[10px] text-ink-500 flex-none">PITCH</span>
-          <button
-            v-for="opt in [true, false]"
-            :key="String(opt)"
-            class="flex-1 h-9 rounded text-[12px] border transition-colors"
-            :class="applyPitch === opt
-              ? 'bg-flag text-ink-900 border-flag font-medium'
-              : 'border-ink-500 text-flag-soft active:bg-ink-700'"
-            @click="applyPitch = opt"
-          >
-            {{ opt ? 'Applied' : 'Dry' }}
-          </button>
-        </div>
-
-        <template v-if="showMore && exportable && !lazy">
-          <button
-            v-if="!archive"
-            class="w-full h-12 mt-2 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
-                   active:scale-[0.99] transition-transform disabled:opacity-50"
-            :disabled="exporting"
-            @click="prepareArchive"
-          >
-            {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
-          </button>
-
-          <!-- Built and waiting. Sending is its own tap so iOS still counts
-               it as user-initiated. -->
-          <div v-else class="mt-2">
-            <p class="text-center text-[11px] text-flag-dim mb-2">
-              {{ archive.filename }} · {{ archive.files }} files ·
-              {{ formatBytes(archive.bytes) }}
-            </p>
-            <div class="flex gap-2">
-              <button
-                v-if="canShareFiles"
-                class="flex-1 h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
-                       active:scale-[0.99] transition-transform"
-                @click="sendArchive"
-              >
-                Send to…
-              </button>
-              <button
-                class="h-12 rounded-lg border border-ink-500 text-flag-soft text-[13px]
-                       active:bg-ink-700"
-                :class="canShareFiles ? 'px-5' : 'flex-1'"
-                @click="saveArchive"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <p v-if="exportNote" class="text-center text-[11px] text-flag mt-2">
-          {{ exportNote }}
-        </p>
-
         <div v-if="showMore && bankHasPads && !lazy" class="flex justify-center mt-3">
           <button
             class="px-4 h-9 rounded-full border text-[12px] transition-colors"
@@ -1801,6 +1739,73 @@ const focusLabel = computed(() =>
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
+        </p>
+      </div>
+
+      <!-- Behind the ▾ like the rest of the occasional controls, but
+           pinned rather than left at the end of the scroll: sixteen pads
+           are taller than the screen, so opening the fold used to reveal
+           this below the bottom of it. Folded away it costs no pad height;
+           opened it's on screen immediately. -->
+      <div
+        v-if="showMore && exportable && !lazy"
+        class="flex-none px-4 pt-2 pb-safe border-t border-ink-700 bg-ink-800"
+      >
+        <!-- Only worth asking when something is actually pitched. -->
+        <div v-if="hasPitchedPads" class="flex items-center gap-2 mb-2">
+          <span class="text-[10px] text-ink-500 flex-none">PITCH</span>
+          <button
+            v-for="opt in [true, false]"
+            :key="String(opt)"
+            class="flex-1 h-9 rounded text-[12px] border transition-colors"
+            :class="applyPitch === opt
+              ? 'bg-flag text-ink-900 border-flag font-medium'
+              : 'border-ink-500 text-flag-soft active:bg-ink-700'"
+            @click="applyPitch = opt"
+          >
+            {{ opt ? 'Applied' : 'Dry' }}
+          </button>
+        </div>
+
+        <button
+          v-if="!archive"
+          class="w-full h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                 active:scale-[0.99] transition-transform disabled:opacity-50"
+          :disabled="exporting"
+          @click="prepareArchive"
+        >
+          {{ exporting ? 'BUILDING…' : 'EXPORT CHOPS' }}
+        </button>
+
+        <!-- Built and waiting. Sending is its own tap so iOS still counts
+             it as user-initiated. -->
+        <template v-else>
+          <p class="text-center text-[11px] text-flag-dim mb-2">
+            {{ archive.filename }} · {{ archive.files }} files ·
+            {{ formatBytes(archive.bytes) }}
+          </p>
+          <div class="flex gap-2">
+            <button
+              v-if="canShareFiles"
+              class="flex-1 h-12 rounded-lg bg-flag text-ink-900 text-[14px] font-semibold
+                     active:scale-[0.99] transition-transform"
+              @click="sendArchive"
+            >
+              Send to…
+            </button>
+            <button
+              class="h-12 rounded-lg border border-ink-500 text-flag-soft text-[13px]
+                     active:bg-ink-700"
+              :class="canShareFiles ? 'px-5' : 'flex-1'"
+              @click="saveArchive"
+            >
+              Save
+            </button>
+          </div>
+        </template>
+
+        <p v-if="exportNote" class="text-center text-[11px] text-flag mt-1.5">
+          {{ exportNote }}
         </p>
       </div>
     </template>

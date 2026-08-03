@@ -95,12 +95,16 @@ export const HELP: Record<HelpKey, HelpTopic> = {
         text: 'Plays the trim and cuts a new chop everywhere you tap, filling pads in order — the cuts land where you heard them.',
       },
       {
+        term: 'The ▾ button',
+        text: 'Folds away the things you need less often — pitch, the flag list, clearing a bank, and EXPORT CHOPS along the bottom.',
+      },
+      {
         term: 'Nudges and pitch',
-        text: 'IN and OUT move the edges, by an amount that follows the zoom. Pitch is varispeed and belongs to the pad, not the trim.',
+        text: 'IN and OUT move the edges, by an amount that follows the zoom. Pitch is varispeed, lives under ▾, and belongs to the pad rather than the trim.',
       },
       {
         term: 'EXPORT CHOPS',
-        text: 'A zip of WAVs plus a manifest with the timestamps, the pitches and a link back to the original where there is one.',
+        text: 'Tap ▾ and it sits along the bottom, once there is a trim or a pad. A zip of WAVs plus a manifest with the timestamps, the pitches and a link back to the original where there is one.',
       },
     ],
   },
