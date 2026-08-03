@@ -481,11 +481,30 @@ function onUp(e: PointerEvent) {
 
 /* ---- controls, pointed at whatever is focused ---- */
 
-function nudge(edge: 'startSec' | 'endSec', delta: number) {
+/**
+ * Nudge granularity follows the zoom, so a tap always moves about a
+ * fiftieth of what's on screen. A fixed step can't work across the ladder:
+ * 0.1s is a reasonable hop at ALL and a third of the window at 0.1s.
+ *
+ * Bounded at both ends — a long track at ALL would otherwise jump seconds
+ * per tap, and the deepest zoom would land below what the ear can place.
+ */
+const nudgeStep = computed(() => {
+  const span = shownView.value.end - shownView.value.start
+  return Math.min(0.5, Math.max(0.002, span / 50))
+})
+
+const nudgeLabel = computed(() => {
+  const s = nudgeStep.value
+  return s >= 0.1 ? `${s.toFixed(2)}s` : `${Math.round(s * 1000)}ms`
+})
+
+/** @param dir -1 or 1; the distance comes from the zoom. */
+function nudge(edge: 'startSec' | 'endSec', dir: number) {
   const cur = focused.value
   if (!cur) return
   const next = { ...cur }
-  next[edge] = Math.max(0, Math.min(total.value, next[edge] + delta))
+  next[edge] = Math.max(0, Math.min(total.value, next[edge] + dir * nudgeStep.value))
   if (next.endSec - next.startSec < MIN_LEN) return
   writeFocused(next)
   recentreZoom(next[edge])
@@ -1136,11 +1155,14 @@ const focusLabel = computed(() =>
 
         <div class="flex items-center gap-1.5 mt-2">
           <span class="text-[10px] text-ink-500 w-4">IN</span>
-          <button class="trim" :disabled="!focused" @click="nudge('startSec', -0.1)">−</button>
-          <button class="trim" :disabled="!focused" @click="nudge('startSec', 0.1)">+</button>
-          <span class="flex-1" />
-          <button class="trim" :disabled="!focused" @click="nudge('endSec', -0.1)">−</button>
-          <button class="trim" :disabled="!focused" @click="nudge('endSec', 0.1)">+</button>
+          <button class="trim" :disabled="!focused" @click="nudge('startSec', -1)">−</button>
+          <button class="trim" :disabled="!focused" @click="nudge('startSec', 1)">+</button>
+          <!-- What a tap is worth at this zoom. -->
+          <span class="flex-1 text-center text-[10px] tabular-nums text-ink-500">
+            ±{{ nudgeLabel }}
+          </span>
+          <button class="trim" :disabled="!focused" @click="nudge('endSec', -1)">−</button>
+          <button class="trim" :disabled="!focused" @click="nudge('endSec', 1)">+</button>
           <span class="text-[10px] text-ink-500 w-6 text-right">OUT</span>
         </div>
 
