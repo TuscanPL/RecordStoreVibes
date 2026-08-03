@@ -112,6 +112,19 @@ const ZOOM_LEVELS = [
 const zoomLevel = ref(0)
 
 /**
+ * A window width pinched off the ladder, in seconds.
+ *
+ * The rungs are presets, not the model — a pinch lands wherever it lands and
+ * being snapped to the nearest one would fight the finger. Null means the
+ * ladder is in charge. Kept apart from the panned window so re-centring on a
+ * pad keeps the magnification you pinched to.
+ */
+const zoomSpan = ref<number | null>(null)
+
+/** Anything narrower is past the point of being able to see a waveform. */
+const MIN_SPAN = 0.05
+
+/**
  * What the strip does with a thumb.
  *
  * Zoomed in, the window is a few seconds of a several-minute track and it's
@@ -177,6 +190,11 @@ const view = computed(() => {
 
   if (panView.value) return panView.value
 
+  if (zoomSpan.value !== null) {
+    const half = zoomSpan.value / 2
+    return windowAround(zoomCentre.value - half, zoomCentre.value + half)
+  }
+
   const level = ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!
   if (level.span === 'all') return { start: 0, end: total.value }
 
@@ -191,16 +209,54 @@ const view = computed(() => {
   return windowAround(zoomCentre.value - half, zoomCentre.value + half)
 })
 
-const zoomLabel = computed(() => (ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!).label)
+function spanLabel(sec: number): string {
+  if (sec >= 60) return `${Math.round(sec / 60)}m`
+  if (sec >= 10) return `${Math.round(sec)}s`
+  if (sec >= 1) return `${sec.toFixed(1)}s`
+  return `${Math.round(sec * 1000)}ms`
+}
+
+const zoomLabel = computed(() =>
+  zoomSpan.value !== null
+    ? spanLabel(zoomSpan.value)
+    : (ZOOM_LEVELS[zoomLevel.value] ?? ZOOM_LEVELS[0]!).label,
+)
+
+/**
+ * The rung a pinched span sits closest to, so the ± buttons carry on from
+ * where the fingers left off instead of from a level nothing is showing.
+ * Compared on a log scale — the ladder is geometric, so 2s is nearer 3s than
+ * it is to 1s by ratio even though the differences are equal.
+ */
+function nearestRung(span: number): number {
+  let best = ZOOM_LEVELS.length - 1
+  let bestDiff = Infinity
+  ZOOM_LEVELS.forEach((l, i) => {
+    if (typeof l.span !== 'number') return
+    const d = Math.abs(Math.log(l.span / span))
+    if (d < bestDiff) {
+      bestDiff = d
+      best = i
+    }
+  })
+  return best
+}
+
+/** Where the ladder currently stands, pinch included. */
+const rung = computed(() =>
+  zoomSpan.value !== null ? nearestRung(zoomSpan.value) : zoomLevel.value,
+)
 
 function stepZoom(by: number) {
-  const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, zoomLevel.value + by))
-  if (next === zoomLevel.value) return
+  const from = rung.value
+  const next = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, from + by))
+  if (next === from && zoomSpan.value === null) return
   const panned = panView.value
   // Zoom around wherever reading left off, or the middle of what was fitted.
   if (panned) recentreZoom((panned.start + panned.end) / 2)
-  else if (zoomLevel.value <= 1) recentreZoom()
+  else if (from <= 1) recentreZoom()
   panView.value = null
+  zoomSpan.value = null
   zoomLevel.value = next
   commitTrim()
 }
@@ -233,6 +289,10 @@ onMounted(async () => {
       trim.value = { startSec: start, endSec: end }
       // `zoomed` predates the ladder: an old on/off save maps to FIT.
       zoomLevel.value = saved.zoom ?? (saved.zoomed ? 1 : 0)
+      zoomSpan.value =
+        saved.span && saved.span < total.value
+          ? Math.max(MIN_SPAN, Math.min(total.value, saved.span))
+          : null
       recentreZoom()
     }
   } catch {
@@ -246,6 +306,8 @@ onBeforeUnmount(() => sampler.release())
 
 const strip = ref<HTMLElement | null>(null)
 let mode: 'new' | 'start' | 'end' | null = null
+/** A selection waiting on the finger to lift, so a pinch can pre-empt it. */
+let tapSelect: 'trim' | number | null = null
 let anchor = 0
 
 const EDGE_GRAB_PX = 18
@@ -308,7 +370,9 @@ function activeView(): { start: number; end: number } {
 function commitTrim() {
   library.setTrim(
     key.value,
-    trim.value ? { ...trim.value, zoom: zoomLevel.value } : null,
+    trim.value
+      ? { ...trim.value, zoom: zoomLevel.value, span: zoomSpan.value ?? undefined }
+      : null,
   )
 }
 
@@ -366,9 +430,96 @@ let pan: { x: number; base: { start: number; end: number }; moved: boolean } | n
 /** Below this a read drag was a tap, and selects instead of pans. */
 const PAN_SLOP_PX = 6
 
+/**
+ * Every finger currently on the strip, by x.
+ *
+ * Only x matters — the strip is one-dimensional, so a pinch is the distance
+ * between two points on a line and a vertical component would be noise.
+ */
+const points = new Map<number, number>()
+
+/**
+ * A pinch, held from the two fingers that started it.
+ *
+ * `anchor` is the moment of the track that was under the midpoint when the
+ * gesture began, and it stays under the midpoint throughout — the same
+ * contract a map makes. Measuring against the frame it started in rather
+ * than the last one keeps the scaling from compounding frame to frame.
+ */
+let pinch: { base: { start: number; end: number }; dist: number; anchor: number } | null = null
+
+/** The two fingers' x positions and the strip's box, or null if it's gone. */
+function pinchGeometry() {
+  const el = strip.value
+  if (!el) return null
+  const xs = [...points.values()]
+  if (xs.length < 2) return null
+  const r = el.getBoundingClientRect()
+  const width = Math.max(1, r.width)
+  return {
+    dist: Math.max(1, Math.abs(xs[0]! - xs[1]!)),
+    focal: Math.min(1, Math.max(0, ((xs[0]! + xs[1]!) / 2 - r.left) / width)),
+  }
+}
+
+/** Throws away an in-progress edit without writing it. */
+function abortEdit() {
+  mode = null
+  tapSelect = null
+  draft.value = null
+  draftNeighbour.value = null
+  dragView.value = null
+}
+
+function startPinch(base: { start: number; end: number }) {
+  const g = pinchGeometry()
+  if (!g) return
+  pinch = { base, dist: g.dist, anchor: base.start + g.focal * (base.end - base.start) }
+}
+
+function applyPinch() {
+  const g = pinchGeometry()
+  if (!g || !pinch || total.value <= 0) return
+
+  const baseSpan = pinch.base.end - pinch.base.start
+  const span = Math.min(total.value, Math.max(MIN_SPAN, baseSpan * (pinch.dist / g.dist)))
+
+  // Spreading the fingers all the way out is a request for the whole track,
+  // and leaving a span pinned at exactly the duration would just be ALL with
+  // extra state to carry.
+  if (span >= total.value - 1e-6) {
+    zoomSpan.value = null
+    panView.value = null
+    zoomLevel.value = 0
+    return
+  }
+
+  zoomSpan.value = span
+  // The anchor stays under the midpoint, so the fingers also drag the window
+  // along — pinching and panning at once, the way a map behaves.
+  panView.value = windowAround(pinch.anchor - g.focal * span, pinch.anchor + (1 - g.focal) * span)
+}
+
 function onDown(e: PointerEvent) {
   if (!sampler.buffer.value || lazy.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  points.set(e.pointerId, e.clientX)
+
+  // A second finger is a pinch in either mode — it can't be anything else,
+  // and an edit already under way is abandoned rather than committed from
+  // wherever the first finger happened to be.
+  //
+  // Scaled from the window the *first* finger landed in, not the live one:
+  // fingers never arrive together, and anything the first one set in motion
+  // would otherwise become the base the pinch works from.
+  if (points.size === 2) {
+    const base = dragView.value ?? pan?.base ?? { ...view.value }
+    abortEdit()
+    pan = null
+    startPinch(base)
+    return
+  }
+  if (points.size > 2) return
 
   if (stripMode.value === 'read') {
     pan = { x: e.clientX, base: { ...view.value }, moved: false }
@@ -396,12 +547,14 @@ function onDown(e: PointerEvent) {
 
   // 2. Tapping a chop selects it. Chops sit inside the trim, so this has to
   //    come first or every tap would land on the trim instead.
+  //
+  //    Held until the finger lifts. Selecting re-frames the window and plays
+  //    the chop, and a finger on its way to a pinch shouldn't do either —
+  //    the second one is only a few milliseconds behind.
   const hit = chopAt(t)
   if (hit >= 0) {
     mode = null
-    focus.value = hit
-    recentreZoom()
-    playFocused()
+    tapSelect = hit
     return
   }
 
@@ -409,8 +562,7 @@ function onDown(e: PointerEvent) {
   const t0 = trim.value
   if (t0 && t >= t0.startSec && t <= t0.endSec) {
     mode = null
-    focusTrim()
-    playFocused()
+    tapSelect = 'trim'
     return
   }
 
@@ -422,6 +574,13 @@ function onDown(e: PointerEvent) {
 }
 
 function onMove(e: PointerEvent) {
+  if (points.has(e.pointerId)) points.set(e.pointerId, e.clientX)
+
+  if (pinch) {
+    applyPinch()
+    return
+  }
+
   if (pan) {
     const el = strip.value
     if (!el) return
@@ -500,6 +659,20 @@ function onUp(e: PointerEvent) {
   } catch {
     // capture already gone
   }
+  points.delete(e.pointerId)
+
+  if (pinch) {
+    if (points.size >= 2) return
+    pinch = null
+    const v = panView.value
+    if (v) zoomCentre.value = (v.start + v.end) / 2
+    commitTrim()
+    // One finger left over carries on as a pan rather than being stranded
+    // until it lifts. Already "moved", so it can't land as a tap.
+    const rest = [...points.values()][0]
+    pan = rest === undefined ? null : { x: rest, base: { ...view.value }, moved: true }
+    return
+  }
 
   if (pan) {
     const p = pan
@@ -525,6 +698,19 @@ function onUp(e: PointerEvent) {
       focus.value = 'trim'
       playFocused()
     }
+    return
+  }
+
+  if (tapSelect !== null) {
+    const sel = tapSelect
+    tapSelect = null
+    dragView.value = null
+    if (sel === 'trim') focusTrim()
+    else {
+      focus.value = sel
+      recentreZoom()
+    }
+    playFocused()
     return
   }
 
@@ -1082,6 +1268,11 @@ function inView(a: number, b: number): boolean {
  * every other part. Null when the whole track is already on screen, since
  * there's nothing to locate then.
  */
+/** Whether the strip is showing less than the whole track. */
+const zoomedIn = computed(
+  () => total.value > 0 && shownView.value.end - shownView.value.start < total.value - 1e-6,
+)
+
 const overview = computed(() => {
   if (total.value <= 0) return null
   const v = shownView.value
@@ -1166,7 +1357,7 @@ const focusLabel = computed(() =>
               :markers="flagPercents"
               :range-start="total > 0 ? shownView.start / total : 0"
               :range-end="total > 0 ? shownView.end / total : 1"
-              :dense="zoomLevel > 0"
+              :dense="zoomedIn"
             />
           </div>
 
@@ -1195,19 +1386,19 @@ const focusLabel = computed(() =>
           >
             <button
               class="w-7 h-6 text-[13px] leading-none text-flag-soft disabled:opacity-30"
-              :disabled="zoomLevel === 0"
+              :disabled="zoomSpan === null && zoomLevel === 0"
               aria-label="Zoom out"
               @pointerdown.stop="stepZoom(-1)"
             >
               −
             </button>
             <span class="px-1 text-[9px] tabular-nums w-9 text-center"
-                  :class="zoomLevel > 0 ? 'text-flag' : 'text-flag-soft'">
+                  :class="zoomedIn ? 'text-flag' : 'text-flag-soft'">
               {{ zoomLabel }}
             </span>
             <button
               class="w-7 h-6 text-[13px] leading-none text-flag-soft disabled:opacity-30"
-              :disabled="zoomLevel === ZOOM_LEVELS.length - 1"
+              :disabled="zoomSpan === null && zoomLevel === ZOOM_LEVELS.length - 1"
               aria-label="Zoom in"
               @pointerdown.stop="stepZoom(1)"
             >
@@ -1578,8 +1769,9 @@ const focusLabel = computed(() =>
 
         <p v-if="showMore" class="text-center text-[10px] text-ink-500 mt-3 leading-relaxed">
           READ drags the waveform along without changing anything; EDIT draws
-          and retrims. Tap a pad to point the controls at that chop; tap the
-          trim to go back. Swipe the pads for another bank.
+          and retrims. Pinch the waveform to zoom in either mode.
+          Tap a pad to point the controls at that chop; tap the trim to go
+          back. Swipe the pads for another bank.
           <span v-if="degraded" class="block">
             Decoded at {{ (sampler.rate.value / 1000).toFixed(1) }}kHz to fit in memory.
           </span>
