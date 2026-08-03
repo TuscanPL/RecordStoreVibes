@@ -8,6 +8,7 @@ import { useDigSession, type CachedView } from '../composables/useDigSession'
 import { formatTime } from '../composables/useAudio'
 import RecordRow from '../components/RecordRow.vue'
 import ImportSheet from '../components/ImportSheet.vue'
+import HelpButton from '../components/HelpButton.vue'
 
 /**
  * One crate at a time. Pulling down swaps it for a deeper one rather than
@@ -373,6 +374,7 @@ onBeforeUnmount(() => {
           @click="toggleDiag"
         >{{ buildId }}</button>
       </h1>
+      <div class="flex items-center gap-1 -mr-2">
       <p class="text-[11px] text-flag-dim tabular-nums">
         <span v-if="loading">digging…</span>
         <span v-else-if="visible.length">
@@ -388,6 +390,8 @@ onBeforeUnmount(() => {
           <span v-else-if="justReset" class="text-flag">· reset</span>
         </span>
       </p>
+      <HelpButton topic="browse" />
+      </div>
     </header>
 
     <p

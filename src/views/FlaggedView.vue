@@ -6,6 +6,7 @@ import { formatTime } from '../composables/useAudio'
 import { useExport } from '../composables/useExport'
 import { downloadedBytes, clearDownloads } from '../composables/useSampler'
 import { formatBytes } from '../composables/useWaveform'
+import HelpButton from '../components/HelpButton.vue'
 
 const library = useLibrary()
 const { exportJson, exportCsv } = useExport()
@@ -68,9 +69,12 @@ function fileCount(markers: { trackName: string }[]): number {
   <div class="h-full flex flex-col">
     <header class="flex-none px-4 pt-safe pb-2 flex items-baseline justify-between">
       <h1 class="font-display text-2xl text-cream">Flagged</h1>
-      <p class="text-[11px] text-flag-dim tabular-nums">
-        {{ library.markerCount }} marker{{ library.markerCount === 1 ? '' : 's' }}
-      </p>
+      <div class="flex items-center gap-1 -mr-2">
+        <p class="text-[11px] text-flag-dim tabular-nums">
+          {{ library.markerCount }} marker{{ library.markerCount === 1 ? '' : 's' }}
+        </p>
+        <HelpButton topic="flagged" />
+      </div>
     </header>
 
     <div class="flex-1 min-h-0 scroll-y">

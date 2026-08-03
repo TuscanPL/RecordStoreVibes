@@ -11,6 +11,7 @@ import { encodeWav } from '../lib/wav'
 import { formatBytes } from '../composables/useWaveform'
 import { useAudio, formatTime } from '../composables/useAudio'
 import Waveform from '../components/Waveform.vue'
+import HelpButton from '../components/HelpButton.vue'
 
 const props = defineProps<{ id: string; track: string }>()
 const router = useRouter()
@@ -1341,6 +1342,7 @@ const focusLabel = computed(() =>
       >
         STOP
       </button>
+      <HelpButton topic="sampler" />
     </header>
 
     <p v-if="loadError" class="px-6 py-10 text-center text-[14px] text-red-300/80">
