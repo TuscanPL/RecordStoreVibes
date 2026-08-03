@@ -16,6 +16,8 @@ export interface TrimState {
   zoomed?: boolean
   /** Index into the zoom ladder. */
   zoom?: number
+  /** Window width in seconds when pinched off the ladder, overriding zoom. */
+  span?: number
 }
 
 export const PAD_COUNT = 16
