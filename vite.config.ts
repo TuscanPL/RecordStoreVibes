@@ -51,7 +51,21 @@ function serviceWorkerPrecache(): Plugin {
   }
 }
 
+/**
+ * Stamped into the app so a running copy can say which build it is.
+ * Without it there's no way to tell a fix that didn't work from one that
+ * never arrived — a service worker can serve a stale build indefinitely.
+ */
+const BUILD_ID = (() => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}${p(d.getDate())}.${p(d.getHours())}${p(d.getMinutes())}`
+})()
+
 export default defineConfig({
   base: '/RecordStoreVibes/',
   plugins: [vue(), serviceWorkerPrecache()],
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
 })
