@@ -17,7 +17,16 @@
          standalone signal iOS keeps the browser chrome at the bottom. -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!--
+      `black`, not `black-translucent`. Translucent makes content run under
+      the status bar but leaves window.innerHeight excluding it, so the page
+      ends up exactly one status bar short of the screen — measured on device
+      as win 797 against scr 844, with the missing 47px showing as a band
+      below the tab bar. Opaque hands back a viewport that matches the space
+      it actually occupies, and against a near-black theme the bar is
+      seamless anyway.
+    -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <meta name="apple-mobile-web-app-title" content="Crate" />
     <link rel="apple-touch-icon" href="./icon-180.png" />
     <link
