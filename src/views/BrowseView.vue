@@ -13,6 +13,46 @@ import RecordRow from '../components/RecordRow.vue'
 const LIMIT = 40
 
 const library = useLibrary()
+
+/**
+ * Which build is actually running, and what the window really measures.
+ *
+ * A service worker can serve a stale build for a long time, which makes a
+ * fix that never arrived look exactly like a fix that didn't work. Tapping
+ * the version shows the geometry behind the standalone chin, straight from
+ * the device rather than inferred from a screenshot.
+ */
+const buildId = __BUILD_ID__
+const showDiag = ref(false)
+const diag = ref('')
+
+function readDiag() {
+  const app = document.getElementById('app')
+  const rect = app?.getBoundingClientRect()
+  const probe = document.createElement('div')
+  probe.style.cssText =
+    'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:0'
+  document.body.appendChild(probe)
+  const safeBottom = Math.round(probe.getBoundingClientRect().height)
+  probe.remove()
+
+  const standalone =
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    (navigator as unknown as { standalone?: boolean }).standalone === true
+
+  diag.value = [
+    `win ${Math.round(window.innerHeight)}`,
+    `app ${Math.round(rect?.height ?? 0)}`,
+    `scr ${Math.round(window.screen.height)}`,
+    `safe ${safeBottom}`,
+    standalone ? 'standalone' : 'browser',
+  ].join(' · ')
+}
+
+function toggleDiag() {
+  showDiag.value = !showDiag.value
+  if (showDiag.value) readDiag()
+}
 const dig = useDigSession()
 const records = ref<CrateRecord[]>([])
 const totalFound = ref(0)
@@ -241,7 +281,13 @@ onBeforeUnmount(stashScroll)
 <template>
   <div class="h-full flex flex-col">
     <header class="flex-none px-4 pt-safe pb-2 flex items-baseline justify-between">
-      <h1 class="font-display text-2xl text-cream">Crate</h1>
+      <h1 class="font-display text-2xl text-cream">
+        Crate<button
+          class="align-super text-[9px] font-body tabular-nums text-ink-600 ml-1"
+          :aria-label="`Build ${buildId}`"
+          @click="toggleDiag"
+        >{{ buildId }}</button>
+      </h1>
       <p class="text-[11px] text-flag-dim tabular-nums">
         <span v-if="loading">digging…</span>
         <span v-else-if="visible.length">
@@ -252,6 +298,14 @@ onBeforeUnmount(stashScroll)
         </span>
       </p>
     </header>
+
+    <p
+      v-if="showDiag"
+      class="flex-none px-4 pb-1 text-[10px] tabular-nums text-ink-500"
+      @click="readDiag"
+    >
+      {{ diag }}
+    </p>
 
     <!-- Results fill the screen; everything you tap is below. -->
     <div class="flex-1 min-h-0 relative overflow-hidden">
