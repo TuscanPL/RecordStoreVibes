@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { provider, CRATES } from '../providers'
+import { toStubRecord } from '../providers/local'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { useDigSession, type CachedView } from '../composables/useDigSession'
+import { formatTime } from '../composables/useAudio'
 import RecordRow from '../components/RecordRow.vue'
+import ImportSheet from '../components/ImportSheet.vue'
 
 /**
  * One crate at a time. Pulling down swaps it for a deeper one rather than
@@ -58,6 +61,16 @@ function toggleDiag() {
   showDiag.value = !showDiag.value
   if (showDiag.value) readDiag()
 }
+/**
+ * Your own imports, sitting at the front of the crate strip.
+ *
+ * Not a query — a finite list held on the device — so it never goes through
+ * `run`, has no pages to dig into and can't fail to load. It's here rather
+ * than in CRATES because CRATES is the archive's menu.
+ */
+const YOURS = 'yours'
+const sheetOpen = ref(false)
+
 const dig = useDigSession()
 const records = ref<CrateRecord[]>([])
 const totalFound = ref(0)
@@ -176,8 +189,46 @@ function fetchCrate(crate: { id: string; query: string }, filtered: boolean) {
   )
 }
 
+/** Reads straight from the store, so adding or removing shows immediately. */
+function showYours() {
+  requestSeq++
+  loading.value = false
+  error.value = null
+  drained.value = false
+  activeCrate.value = YOURS
+  currentKey.value = `crate:${YOURS}`
+  query.value = ''
+  const mine = library.importList.map(toStubRecord)
+  records.value = mine
+  totalFound.value = mine.length
+  label.value = 'Yours'
+  // Cached like any other crate so coming back from a record lands here,
+  // then rebuilt from the store on arrival in case it changed meanwhile.
+  dig.cacheView({
+    key: currentKey.value,
+    tag: YOURS,
+    query: '',
+    label: label.value,
+    records: mine,
+    totalFound: mine.length,
+    drained: false,
+    scrollTop: 0,
+  })
+  dig.setLast(currentKey.value)
+  if (listEl.value) listEl.value.scrollTop = 0
+}
+
+function removeImport(id: string) {
+  library.removeImport(id)
+  showYours()
+}
+
 /** Selecting a crate shows what's already there rather than spending a fetch. */
 function openCrate(crate: { id: string; query: string }) {
+  if (crate.id === YOURS) {
+    showYours()
+    return
+  }
   query.value = ''
   const cached = dig.getView(`crate:${crate.id}`)
   if (cached) {
@@ -209,6 +260,8 @@ function runSearch(filtered = false) {
 /** The only path that pages deeper and drops what's already been seen. */
 function digDeeper() {
   if (loading.value || !currentKey.value) return
+  // Nothing upstream to page into; the list is already all of it.
+  if (activeCrate.value === YOURS) return
   const crate = CRATES.find(c => c.id === activeCrate.value)
   if (crate) fetchCrate(crate, true)
   else if (query.value.trim()) runSearch(true)
@@ -269,7 +322,10 @@ onMounted(() => {
   // Coming back from a record restores exactly what was on screen, scroll
   // included — no fetch, and no pages spent just for navigating.
   const last = dig.lastView()
-  if (last) show(last)
+  // Rebuilt rather than restored: the cached copy predates anything added
+  // or removed since, and this list is cheap to make.
+  if (last?.tag === YOURS) showYours()
+  else if (last) show(last)
   else fetchCrate(CRATES[0]!, false)
 })
 
@@ -344,6 +400,17 @@ onBeforeUnmount(stashScroll)
       </div>
 
       <p
+        v-else-if="!visible.length && activeCrate === YOURS"
+        class="px-6 py-10 text-center text-[14px] text-flag-dim leading-relaxed"
+      >
+        Nothing of your own yet.
+        <br />
+        <span class="text-[13px] text-ink-500">
+          Add a link straight to an audio file, or a file off this device.
+        </span>
+      </p>
+
+      <p
         v-else-if="!visible.length"
         class="px-6 py-10 text-center text-[14px] text-flag-dim leading-relaxed"
       >
@@ -354,6 +421,37 @@ onBeforeUnmount(stashScroll)
         </template>
         <template v-else>Nothing here. Try another crate or a different search.</template>
       </p>
+
+      <!-- Your own things get their own row: they carry a length and a way
+           to get rid of them, and there is no deeper batch to promise. -->
+      <template v-else-if="activeCrate === YOURS">
+        <div
+          v-for="imp in library.importList"
+          :key="imp.id"
+          class="flex items-center gap-2 pl-4 pr-2 border-b border-ink-700/60"
+        >
+          <router-link :to="`/r/${imp.id}`" class="flex-1 min-w-0 py-3 active:opacity-70">
+            <p class="text-[15px] leading-tight text-cream truncate">{{ imp.title }}</p>
+            <p class="text-[12px] text-flag-dim truncate mt-0.5">
+              {{ imp.kind === 'file' ? 'your file' : imp.creator }}
+              <span v-if="imp.durationSec"> · {{ formatTime(imp.durationSec) }}</span>
+              <span v-if="!imp.readable" class="text-ink-500"> · flags only</span>
+            </p>
+          </router-link>
+          <button
+            class="w-11 h-11 flex-none flex items-center justify-center text-ink-500
+                   active:text-red-300 text-[15px]"
+            :aria-label="`Remove ${imp.title}`"
+            @click="removeImport(imp.id)"
+          >
+            ×
+          </button>
+        </div>
+        <p class="px-6 py-6 text-center text-[11px] text-ink-500 leading-relaxed">
+          Removing one takes its flags and pads with it. There's no copy to
+          go back to.
+        </p>
+      </template>
 
       <template v-else>
         <RecordRow v-for="r in visible" :key="r.id" :record="r" />
@@ -370,6 +468,27 @@ onBeforeUnmount(stashScroll)
     <!-- Controls live in the bottom third, within thumb reach. -->
     <div class="flex-none border-t border-ink-700 bg-ink-800">
       <div class="flex gap-2 px-3 py-2.5 overflow-x-auto no-bar">
+        <!-- Front of the strip and inside thumb reach: adding your own is a
+             first-class way in, not a setting. -->
+        <button
+          class="flex-none px-3.5 h-9 rounded-full text-[13px] border border-dashed
+                 border-ink-500 text-flag-soft active:bg-ink-700"
+          @click="sheetOpen = true"
+        >
+          + Add
+        </button>
+        <button
+          class="flex-none px-3.5 h-9 rounded-full text-[13px] border transition-colors"
+          :class="
+            activeCrate === YOURS
+              ? 'bg-flag text-ink-900 border-flag font-medium'
+              : 'text-flag-soft border-ink-500 active:bg-ink-700'
+          "
+          @click="showYours"
+        >
+          Yours<span v-if="library.importList.length" class="opacity-70">
+            ·{{ library.importList.length }}</span>
+        </button>
         <button
           v-for="c in CRATES"
           :key="c.id"
@@ -401,5 +520,11 @@ onBeforeUnmount(stashScroll)
         />
       </form>
     </div>
+
+    <ImportSheet
+      v-if="sheetOpen"
+      @close="sheetOpen = false"
+      @added="sheetOpen = false; showYours()"
+    />
   </div>
 </template>

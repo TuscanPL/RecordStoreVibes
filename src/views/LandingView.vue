@@ -140,10 +140,12 @@ async function install() {
 
       <section class="mt-8 text-[13px] text-flag-dim leading-relaxed space-y-3">
         <p>
-          It digs the Internet Archive right now, with more libraries on the
-          way. Everything you flag keeps a tag saying where it came from, and
-          that travels into the export — so you always know what you're
-          holding. What you do with it after that is yours to work out.
+          It digs the Internet Archive, and takes whatever you bring it — a
+          link straight to an audio file, or a file off your own device. More
+          libraries on the way. Everything you flag keeps a tag saying where
+          it came from, and that travels into the export — so you always know
+          what you're holding. What you do with it after that is yours to
+          work out.
         </p>
         <p>
           Nothing leaves your phone. Flags, chops and downloads all live on the

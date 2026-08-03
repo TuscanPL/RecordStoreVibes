@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { provider, sourceLabel } from '../providers'
+import { provider, sourceLabel, downloadUrl } from '../providers'
 import type { Record as CrateRecord } from '../providers/types'
 import { useLibrary } from '../stores/library'
 import { PAD_COUNT, PAD_BANKS, padKey, type Pad } from '../stores/storage'
@@ -1122,9 +1122,9 @@ watch([bank, trim, applyPitch], () => {
 /**
  * Everything cut from this track, as WAVs in a zip with a manifest.
  *
- * The manifest keeps the untouched timestamps, the semitone values and the
- * archive.org URL, so anything can be re-cut at full fidelity from the
- * original regardless of what was exported here.
+ * The manifest keeps the untouched timestamps, the semitone values and a
+ * link back to the original where there is one, so anything can be re-cut
+ * at full fidelity regardless of what was exported here.
  */
 async function prepareArchive() {
   const buf = sampler.buffer.value
@@ -1178,7 +1178,7 @@ async function prepareArchive() {
         track: trackName.value,
         library: record.value ? sourceLabel(record.value) : 'unknown source',
         details: record.value?.sourceUrl,
-        download: `https://archive.org/download/${props.id}/${encodeURIComponent(trackName.value)}`,
+        download: record.value ? downloadUrl(record.value, trackName.value) : null,
       },
       audio: {
         sampleRate: buf.sampleRate,

@@ -20,6 +20,35 @@ export interface TrimState {
   span?: number
 }
 
+/**
+ * Something you brought in yourself, by link or off the device.
+ *
+ * Only the description is kept here. A file's bytes live in Cache Storage
+ * and a link's live on someone else's server, so this stays small enough to
+ * sit in localStorage next to everything else.
+ */
+export interface ImportRecord {
+  id: string
+  title: string
+  creator: string
+  /** Filename within the record. Stable — flags and pads are keyed on it. */
+  trackName: string
+  durationSec: number | null
+  kind: 'link' | 'file'
+  /** The URL for a link. Empty for a file, which has no address to give. */
+  url: string
+  /**
+   * Whether the app can read the bytes as well as play them.
+   *
+   * A plain <audio> tag needs no permission, but reading a file to chop it
+   * does, and plenty of hosts don't grant it. False means play and flag
+   * work while the sampler doesn't, which is worth saying up front.
+   */
+  readable: boolean
+  bytes: number | null
+  addedAt: number
+}
+
 export const PAD_COUNT = 16
 /** Banks of pads per track, switched by swiping the grid. */
 export const PAD_BANKS = 4
@@ -50,6 +79,8 @@ export interface Persisted {
   pads: { [trackKey: string]: (Pad | null)[][] }
   /** Working ranges per track. Two numbers each — cheap to keep. */
   trims: { [trackKey: string]: TrimState }
+  /** Links and files you added yourself, newest first when listed. */
+  imports: { [id: string]: ImportRecord }
 }
 
 const EMPTY: Persisted = {
@@ -60,6 +91,7 @@ const EMPTY: Persisted = {
   unplayable: [],
   pads: {},
   trims: {},
+  imports: {},
 }
 
 /**
@@ -91,6 +123,7 @@ export function load(): Persisted {
       unplayable: Array.isArray(parsed.unplayable) ? parsed.unplayable : [],
       pads: migratePads(parsed.pads),
       trims: parsed.trims ?? {},
+      imports: parsed.imports ?? {},
     }
   } catch {
     // Corrupt or unavailable storage shouldn't take the app down.
