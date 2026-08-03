@@ -29,12 +29,17 @@ const diag = ref('')
 function readDiag() {
   const app = document.getElementById('app')
   const rect = app?.getBoundingClientRect()
-  const probe = document.createElement('div')
-  probe.style.cssText =
-    'position:fixed;bottom:0;height:env(safe-area-inset-bottom,0px);width:0'
-  document.body.appendChild(probe)
-  const safeBottom = Math.round(probe.getBoundingClientRect().height)
-  probe.remove()
+  const measure = (side: 'top' | 'bottom') => {
+    const probe = document.createElement('div')
+    probe.style.cssText =
+      `position:fixed;${side}:0;height:env(safe-area-inset-${side},0px);width:0`
+    document.body.appendChild(probe)
+    const px = Math.round(probe.getBoundingClientRect().height)
+    probe.remove()
+    return px
+  }
+  const safeTop = measure('top')
+  const safeBottom = measure('bottom')
 
   const standalone =
     window.matchMedia?.('(display-mode: standalone)').matches ||
@@ -44,7 +49,7 @@ function readDiag() {
     `win ${Math.round(window.innerHeight)}`,
     `app ${Math.round(rect?.height ?? 0)}`,
     `scr ${Math.round(window.screen.height)}`,
-    `safe ${safeBottom}`,
+    `safe ${safeTop}/${safeBottom}`,
     standalone ? 'standalone' : 'browser',
   ].join(' · ')
 }
