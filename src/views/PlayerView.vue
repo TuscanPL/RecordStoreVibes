@@ -155,6 +155,60 @@ function timeFromPointer(e: PointerEvent): number {
 
 const canScrub = computed(() => isCurrent.value && total.value > 0)
 
+/* ---- dropping the needle ---- */
+
+/**
+ * Both ends are left out of the draw.
+ *
+ * The lead-in and the run-out are the two parts of a record with nothing on
+ * them, and landing four seconds from the end would be over before you'd
+ * worked out what you were hearing.
+ */
+const DROP_HEAD_SEC = 3
+const DROP_TAIL_SEC = 12
+/** How far a new spot has to be from the old one to feel like a move. */
+const DROP_APART = 0.12
+
+/**
+ * What to aim at: the loaded length, or what the listing claims when this
+ * track isn't the one playing yet.
+ */
+const dropTotal = computed(() =>
+  isCurrent.value ? total.value : (track.value?.durationSec ?? 0),
+)
+const canDrop = computed(() => !!track.value && dropTotal.value > 0)
+
+function randomSpot(length: number, avoid: number): number {
+  const from = Math.min(DROP_HEAD_SEC, length * 0.05)
+  const to = Math.max(from + 0.5, length - Math.min(DROP_TAIL_SEC, length * 0.1))
+  const span = to - from
+
+  let at = from + Math.random() * span
+  // A few retries rather than a loop: on a very short track every spot is
+  // close to every other one, and insisting would spin forever.
+  for (let i = 0; i < 4 && Math.abs(at - avoid) < span * DROP_APART; i++) {
+    at = from + Math.random() * span
+  }
+  return at
+}
+
+/** Somewhere in the middle, at random, playing. */
+async function dropNeedle() {
+  if (!canDrop.value) return
+  const at = randomSpot(dropTotal.value, isCurrent.value ? audio.position.value : -1)
+
+  if (isCurrent.value) {
+    audio.seek(at)
+    if (!audio.isPlaying.value) await audio.play()
+    return
+  }
+
+  // Nothing loaded yet, so the seek waits on metadata the same way a jump
+  // to a flag does.
+  pendingSeek.value = at
+  await openTrack(trackIndex.value)
+}
+
 function onScrubDown(e: PointerEvent) {
   if (!canScrub.value) return
   ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
@@ -429,10 +483,29 @@ watch(trackIndex, () => {
 
       <!-- Bottom third: all controls. -->
       <div class="flex-none px-5 pt-3 pb-safe bg-ink-800 border-t border-ink-700">
+      <div class="flex items-center gap-2.5">
+        <!-- Drop the needle: somewhere in the middle, at random. -->
+        <button
+          class="w-11 h-11 flex-none flex items-center justify-center rounded-lg
+                 border border-ink-500 text-flag-soft active:bg-ink-700
+                 disabled:opacity-30"
+          :disabled="!canDrop"
+          aria-label="Play a random moment"
+          title="Drop the needle somewhere"
+          @click="dropNeedle"
+        >
+          <svg class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="11" cy="13" r="8" stroke-width="1.6" />
+            <circle cx="11" cy="13" r="1.5" fill="currentColor" stroke="none" />
+            <path d="M21 3.5 L14.4 10.1" stroke-width="1.8" stroke-linecap="round" />
+            <circle cx="14.2" cy="10.3" r="1.1" fill="currentColor" stroke="none" />
+          </svg>
+        </button>
+
         <!-- Waveform when loaded, flat bar when not — same scrub surface. -->
         <div
           ref="scrubBar"
-          class="scrub relative flex items-center transition-[height] duration-300"
+          class="scrub flex-1 min-w-0 relative flex items-center transition-[height] duration-300"
           :class="[wave.peaks.value ? 'h-14' : 'h-6', canScrub ? '' : 'opacity-40']"
           role="slider"
           tabindex="0"
@@ -476,6 +549,7 @@ watch(trackIndex, () => {
             </div>
           </div>
         </div>
+      </div>
 
         <div class="flex justify-between items-center text-[11px] text-flag-dim tabular-nums mt-1">
           <span>{{ formatTime(displayPos) }}</span>
