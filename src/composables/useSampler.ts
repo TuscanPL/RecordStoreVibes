@@ -67,9 +67,21 @@ function cacheStorage(): CacheStorage | null {
   return typeof caches !== 'undefined' ? caches : null
 }
 
+/**
+ * Whether this URL is worth keeping a copy of.
+ *
+ * An imported file arrives as a blob URL, which is already local and dies
+ * with the document. Caching one would store the same bytes twice under a
+ * key that can never be hit again, and push real downloads out of the
+ * budget to do it.
+ */
+function worthCaching(url: string): boolean {
+  return url.startsWith('http:') || url.startsWith('https:')
+}
+
 async function readFromDisk(url: string): Promise<ArrayBuffer | null> {
   const cs = cacheStorage()
-  if (!cs) return null
+  if (!cs || !worthCaching(url)) return null
   try {
     const cache = await cs.open(AUDIO_CACHE)
     const hit = await cache.match(url)
@@ -81,7 +93,7 @@ async function readFromDisk(url: string): Promise<ArrayBuffer | null> {
 
 async function writeToDisk(url: string, bytes: ArrayBuffer) {
   const cs = cacheStorage()
-  if (!cs) return
+  if (!cs || !worthCaching(url)) return
   try {
     const cache = await cs.open(AUDIO_CACHE)
     await cache.put(

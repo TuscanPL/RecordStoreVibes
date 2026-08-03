@@ -1,6 +1,6 @@
 import type { FlaggedGroup } from '../stores/library'
 import { formatTime } from './useAudio'
-import { sourceLabel } from '../providers'
+import { downloadUrl, sourceLabel } from '../providers'
 
 function download(filename: string, mime: string, body: string) {
   const blob = new Blob([body], { type: mime })
@@ -17,10 +17,6 @@ function download(filename: string, mime: string, body: string) {
 
 function stamp(): string {
   return new Date().toISOString().slice(0, 10)
-}
-
-function trackUrl(recordId: string, trackName: string): string {
-  return `https://archive.org/download/${recordId}/${encodeURIComponent(trackName)}`
 }
 
 export function buildJson(groups: FlaggedGroup[]): string {
@@ -44,7 +40,7 @@ export function buildJson(groups: FlaggedGroup[]): string {
           sourceUrl: record.sourceUrl,
           tracks: [...byTrack.entries()].map(([trackName, list]) => ({
             file: trackName,
-            downloadUrl: trackUrl(record.id, trackName),
+            downloadUrl: downloadUrl(record, trackName),
             markers: list.map(m => ({
               timestampSec: Number(m.timestampSec.toFixed(2)),
               timestamp: formatTime(m.timestampSec),
@@ -88,7 +84,7 @@ export function buildCsv(groups: FlaggedGroup[]): string {
           record.creator,
           sourceLabel(record),
           m.trackName,
-          trackUrl(record.id, m.trackName),
+          downloadUrl(record, m.trackName) ?? '',
           m.timestampSec.toFixed(2),
           formatTime(m.timestampSec),
           m.note ?? '',
@@ -110,6 +106,5 @@ export function useExport() {
     exportCsv(groups: FlaggedGroup[]) {
       download(`crate-${stamp()}.csv`, 'text/csv', buildCsv(groups))
     },
-    trackUrl,
   }
 }

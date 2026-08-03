@@ -11,7 +11,9 @@ import {
   type Persisted,
   type Pad,
   type TrimState,
+  type ImportRecord,
 } from './storage'
+import { dropBytes, forgetObjectUrl, isLocal } from '../providers/local'
 
 export interface ChoppedTrack {
   key: string
@@ -35,6 +37,7 @@ export const useLibrary = defineStore('library', () => {
   const unplayable = ref<string[]>(initial.unplayable)
   const pads = ref<{ [trackKey: string]: (Pad | null)[][] }>(initial.pads)
   const trims = ref<{ [trackKey: string]: TrimState }>(initial.trims)
+  const imports = ref<{ [id: string]: ImportRecord }>(initial.imports)
   /** Set when the browser refuses to persist (private mode, quota). */
   const persistFailed = ref(false)
 
@@ -47,11 +50,12 @@ export const useLibrary = defineStore('library', () => {
       unplayable: unplayable.value,
       pads: pads.value,
       trims: trims.value,
+      imports: imports.value,
     }
   }
 
   watch(
-    [records, markers, starred, unplayable, pads, trims],
+    [records, markers, starred, unplayable, pads, trims, imports],
     () => {
       persistFailed.value = !save(snapshot())
     },
@@ -111,8 +115,51 @@ export const useLibrary = defineStore('library', () => {
   }
 
   /** Keeps metadata around so the Flagged list works without a network call. */
+  /**
+   * Keeps a record's metadata so it can be listed without a fetch.
+   *
+   * An import's stream URL is dropped on the way in. A file's is an object
+   * URL, which dies with the document — storing one would mean a saved
+   * record that looks complete and points at nothing. The provider mints a
+   * fresh one from the bytes whenever the record is actually opened.
+   */
   function remember(record: CrateRecord) {
-    records.value[record.id] = record
+    records.value[record.id] = isLocal(record.id)
+      ? { ...record, tracks: record.tracks.map(t => ({ ...t, streamUrl: '' })) }
+      : record
+  }
+
+  /* ---- your own links and files ---- */
+
+  /** Newest first: the thing you just added is the thing you want. */
+  const importList = computed(() =>
+    Object.values(imports.value).sort((a, b) => b.addedAt - a.addedAt),
+  )
+
+  function addImport(imported: ImportRecord) {
+    imports.value[imported.id] = imported
+  }
+
+  /**
+   * Drops an import and everything hanging off it.
+   *
+   * Unlike a dud from the archive there's no copy to go back to, so the
+   * flags and pads go with it rather than being left keyed to an id that
+   * will never resolve again.
+   */
+  function removeImport(id: string) {
+    delete imports.value[id]
+    delete records.value[id]
+    delete starred.value[id]
+    markers.value = markers.value.filter(m => m.recordId !== id)
+    for (const key of Object.keys(pads.value)) {
+      if (key.startsWith(`${id}::`)) delete pads.value[key]
+    }
+    for (const key of Object.keys(trims.value)) {
+      if (key.startsWith(`${id}::`)) delete trims.value[key]
+    }
+    forgetObjectUrl(id)
+    void dropBytes(id)
   }
 
   function dropMarker(record: CrateRecord, trackName: string, timestampSec: number): Marker {
@@ -231,6 +278,10 @@ export const useLibrary = defineStore('library', () => {
     unplayable,
     pads,
     trims,
+    imports,
+    importList,
+    addImport,
+    removeImport,
     persistFailed,
     markUnplayable,
     isUnplayable,

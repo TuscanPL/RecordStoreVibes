@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useLibrary } from '../stores/library'
-import { sourceLabel } from '../providers'
+import { downloadUrl, sourceLabel } from '../providers'
 import { formatTime } from '../composables/useAudio'
 import { useExport } from '../composables/useExport'
 import { downloadedBytes, clearDownloads } from '../composables/useSampler'
 import { formatBytes } from '../composables/useWaveform'
 
 const library = useLibrary()
-const { exportJson, exportCsv, trackUrl } = useExport()
+const { exportJson, exportCsv } = useExport()
 
 const expanded = ref<string | null>(null)
 const showStarred = ref(false)
@@ -175,10 +175,13 @@ function fileCount(markers: { trackName: string }[]): number {
             >
               Open
             </router-link>
+            <!-- Only where there's something to download to. A file off
+                 your own device has no address to hand out. -->
             <a
-              v-for="name in [...new Set(g.markers.map(m => m.trackName))]"
+              v-for="name in [...new Set(g.markers.map(m => m.trackName))]
+                .filter(n => downloadUrl(g.record, n))"
               :key="name"
-              :href="trackUrl(g.record.id, name)"
+              :href="downloadUrl(g.record, name)!"
               download
               target="_blank"
               rel="noopener"
@@ -187,7 +190,10 @@ function fileCount(markers: { trackName: string }[]): number {
             >
               ↓ {{ name }}
             </a>
+            <!-- A link when there's a page behind it, a plain tag when the
+                 source is a file on this device. -->
             <a
+              v-if="g.record.sourceUrl"
               :href="g.record.sourceUrl"
               target="_blank"
               rel="noopener"
@@ -196,6 +202,13 @@ function fileCount(markers: { trackName: string }[]): number {
             >
               {{ sourceLabel(g.record) }}
             </a>
+            <span
+              v-else
+              class="px-3 h-9 inline-flex items-center rounded-full border border-ink-600
+                     text-[12px] text-ink-500"
+            >
+              {{ sourceLabel(g.record) }}
+            </span>
           </div>
         </div>
       </div>
