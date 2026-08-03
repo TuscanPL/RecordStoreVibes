@@ -267,6 +267,27 @@ function digDeeper() {
   else if (query.value.trim()) runSearch(true)
 }
 
+/**
+ * Forgets the session's exclusions, so a pull can turn up things it's
+ * already shown you.
+ *
+ * Digging deeper is one-way by design — every pull goes further in and
+ * drops what you've seen — which is right until you've been through a
+ * crate and want another look at something you scrolled past. Tapping the
+ * count is the way back.
+ */
+const justReset = ref(false)
+let resetTimer: ReturnType<typeof setTimeout> | null = null
+
+function resetSeen() {
+  if (!dig.seenCount.value) return
+  dig.reset()
+  drained.value = false
+  justReset.value = true
+  if (resetTimer) clearTimeout(resetTimer)
+  resetTimer = setTimeout(() => (justReset.value = false), 2200)
+}
+
 /** Debounced: IA answers repeated hammering with escalating IP bans. */
 function onType() {
   if (debounce) clearTimeout(debounce)
@@ -336,7 +357,10 @@ function stashScroll() {
 }
 
 // Unmount fires on the way into a record, which is exactly when to save it.
-onBeforeUnmount(stashScroll)
+onBeforeUnmount(() => {
+  stashScroll()
+  if (resetTimer) clearTimeout(resetTimer)
+})
 </script>
 
 <template>
@@ -353,9 +377,15 @@ onBeforeUnmount(stashScroll)
         <span v-if="loading">digging…</span>
         <span v-else-if="visible.length">
           {{ visible.length }} records
-          <span v-if="dig.seenCount.value > visible.length" class="text-ink-500">
+          <button
+            v-if="dig.seenCount.value > visible.length"
+            class="text-ink-500 active:text-flag"
+            aria-label="Forget what's been dug up so pulling can find it again"
+            @click="resetSeen"
+          >
             · {{ dig.seenCount.value }} seen
-          </span>
+          </button>
+          <span v-else-if="justReset" class="text-flag">· reset</span>
         </span>
       </p>
     </header>

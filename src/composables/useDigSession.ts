@@ -51,6 +51,22 @@ export function useDigSession() {
     seenCount.value = seen.size
   }
 
+  /**
+   * Forgets everything dug up so far, opening the whole archive back up.
+   *
+   * Page positions go with it. Excluding nothing but still starting from
+   * page seven would leave the first six pages exactly as unreachable as
+   * they were, which isn't what resetting the filter means. Cached views
+   * stay — what's on screen is still perfectly good to look at.
+   */
+  function reset() {
+    seen.clear()
+    nextPage.clear()
+    drained.clear()
+    for (const view of views.values()) view.drained = false
+    seenCount.value = 0
+  }
+
   function markDrained(query: string) {
     drained.add(query)
   }
@@ -88,6 +104,7 @@ export function useDigSession() {
     takePage,
     advance,
     remember,
+    reset,
     markDrained,
     isDrained,
     cacheView,
